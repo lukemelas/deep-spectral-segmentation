@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+hydra:
+  job:
+    env_set:
+      WANDB_MODE: dryrun
+
+seed: 42
+name: "debug"
+
+ema: 
+  enabled: false
+
+data:
+  loader:
+    batch_size: 1
+    num_workers: 0
+    pin_memory: False

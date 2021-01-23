@@ -1,0 +1,54 @@
+# @package _global_
+hydra:
+  run:
+    dir: ./outputs/${name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+seed: 42
+name: "default"
+eval: False
+
+data:
+  train:
+    root: ""
+  val:
+    root: ""
+  loader:
+    batch_size: 256
+    num_workers: 32
+    pin_memory: True
+  image:
+    crop_size: 224
+
+model:
+  layers: 1
+  resume: null
+
+  ema: 
+  enabled: false
+  decay: 0.99996
+  device: 'cpu'
+
+optimizer:
+  opt: 'adamw'
+  lr: 1e-3
+  weight_decay: 5e-4
+  clip_grad: null
+
+scheduler:
+  epochs: 100
+  sched: 'cosine'
+  min_lr: 1e-5
+  warmup_lr: 1e-6
+  decay_epochs: 30
+  warmup_epochs: 5
+  cooldown_epochs: 10
+  patience_epochs: 10
+  decay_rate: 0.1
+
+distributed:
+  dist_backend: 'nccl'
+  dist_url: 'env://'
+  world_size: null
+  rank: null
+  gpu: null
+  enabled: null

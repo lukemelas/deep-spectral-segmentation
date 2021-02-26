@@ -4,22 +4,25 @@ import torch.nn.functional as F
 from torchvision import models
 
 
-class Model(nn.Module):
+class SimpleModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.model = models.resnet18(pretrained=True)
+        self.model = models.resnet18(pretrained=False)
 
     def forward(self, input, target=None):
         output = self.model(input)
-        if target is not None: 
-            loss = F.cross_entropy(output, target)
-            return loss
-        else:
+        if target is None:
             return output
+        else:
+            return self.loss(output, target)
+
+    @classmethod
+    def loss(cls, output, target):
+        return F.cross_entropy(output, target)
 
 
 if __name__ == "__main__":
-    model = Model()
+    model = SimpleModel()
     o = torch.optim.Adam(model.parameters())
     x = torch.randn(2, 3, 224, 224)
     y = model(x)

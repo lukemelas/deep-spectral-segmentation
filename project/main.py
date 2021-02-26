@@ -20,7 +20,7 @@ from timm.optim import create_optimizer
 from timm.scheduler import create_scheduler
 
 import utils
-from model import Model
+from model import SimpleModel
 from dataset import SimpleDataset
 
 import hydra
@@ -38,7 +38,7 @@ def main(cfg: DictConfig):
 
     # Configuration
     print(OmegaConf.to_yaml(cfg))
-    
+
     # Set random seed
     utils.set_seed(cfg.seed)
 
@@ -47,11 +47,11 @@ def main(cfg: DictConfig):
         wandb.init(project='project', name=cfg.name, job_type='train', config=cfg, save_code=True)
 
     # Model
-    model = Model()
+    model = SimpleModel()
     model.to(device)
 
     # Model EMA
-    # NOTE: It is important to create EMA model after cuda(), DP wrapper, and 
+    # NOTE: It is important to create EMA model after cuda(), DP wrapper, and
     # AMP but before SyncBN and DDP wrapper
     model_ema = None
     if cfg.ema.enabled:
@@ -98,13 +98,13 @@ def main(cfg: DictConfig):
         transforms.CenterCrop(crop_size),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))])
-    dataset_train = CaptionDataset(
+    dataset_train = SimpleDataset(
         root=cfg.data.train.root,
-        transform=transform)
-    dataset_val = CaptionDataset(
+        transform=train_transform)
+    dataset_val = SimpleDataset(
         root=cfg.data.val.root,
-        transform=transform)
-    
+        transform=val_transform)
+
     # Distributed sampler
     if cfg.distributed.enabled:
         num_tasks = utils.get_world_size()
@@ -115,7 +115,7 @@ def main(cfg: DictConfig):
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-    
+
     # Dataloader
     data_loader_train = DataLoader(dataset_train, sampler=sampler_train, drop_last=True, **cfg.data.loader)
     data_loader_val = DataLoader(dataset_val, sampler=sampler_val, drop_last=False, **cfg.data.loader)
@@ -126,6 +126,7 @@ def main(cfg: DictConfig):
         # test_stats = evaluate(data_loader_val, model, device)
 
     # Training
+    best_run = 0
     print(f"Starting training at {datetime.datetime.now()}")
     for epoch in range(start_epoch, cfg.scheduler.epochs):
         if cfg.distributed.enabled:
@@ -144,36 +145,42 @@ def main(cfg: DictConfig):
 
         # Learning rate
         lr_scheduler.step(epoch)
-        utils.save_on_master({
+
+        # Checkpoint
+        checkpoint_dict = {
             'model': model_without_ddp.state_dict(),
             'optimizer': optimizer.state_dict(),
             'lr_scheduler': lr_scheduler.state_dict(),
             'epoch': epoch,
             'model_ema': model_ema.state_dict() if model_ema else None,
             'cfg': cfg,
-        }, 'checkpoint-latest.pth')
+        }
+        utils.save_on_master(checkpoint_dict, 'checkpoint-latest.pth')
 
-        # TODO: add evaluation
-        # if (5 < epoch < 275) and (epoch) % 5 != 0:
-        #     test_stats = evaluate(data_loader_val, model, device)
-        # if utils.is_main_process(): 
-        #     wandb.run.summary["best_accuracy"] = max_accuracy
+        # Evaluate
+        if True:  # (5 < epoch < 275) and (epoch) % 5 != 0:
+            test_stats = evaluate(model, data_loader_val, device)
+            if test_stats['acc'] > best_run:
+                best_run = test_stats['acc']
+                utils.save_on_master(checkpoint_dict, 'checkpoint-best.pth')
+        if utils.is_main_process():
+            wandb.run.summary["best_run"] = best_run
 
 
 def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler, max_norm: Optional[float] = None, 
+                    device: torch.device, epoch: int, loss_scaler, max_norm: Optional[float] = None,
                     model_ema: Optional[ModelEmaV2] = None):
-    
+
     # Train mode
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 10
+    print_freq = 50
 
     # Train
     for i, (input, target) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        image = image.to(device, non_blocking=True)
+        input = input.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
         # Forward
@@ -191,10 +198,10 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
         optimizer.zero_grad()
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
         loss_scaler(loss, optimizer, clip_grad=max_norm,
-            parameters=model.parameters(), create_graph=is_second_order)
+                    parameters=model.parameters(), create_graph=is_second_order)
+        torch.cuda.synchronize()
 
         # Model EMA
-        torch.cuda.synchronize()
         if model_ema is not None:
             model_ema.update(model)
 
@@ -203,6 +210,38 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         if utils.is_main_process():
             wandb.log({'train_loss': loss_value, 'lr': optimizer.param_groups[0]["lr"]})
+
+    # Gather stats from all processes
+    metric_logger.synchronize_between_processes()
+    print("Averaged stats:", metric_logger)
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
+@torch.no_grad()
+def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device):
+
+    # Eval mode
+    model.eval()
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = 'Val'
+    print_freq = 50
+    for i, (input, target) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        input = input.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
+
+        # Forward
+        with torch.cuda.amp.autocast():
+            output = model(input)
+            loss = model.loss(output=output, target=target)
+        torch.cuda.synchronize()
+
+        # Validation metrics
+        acc = (torch.argmax(output) == target).float().mean()
+
+        # Logging
+        batch_size = len(input)
+        metric_logger.update(loss=loss.item(), n=batch_size)
+        metric_logger.update(acc=acc.item(), n=batch_size)
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes()

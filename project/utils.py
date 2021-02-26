@@ -80,11 +80,12 @@ class MetricLogger(object):
         self.delimiter = delimiter
 
     def update(self, **kwargs):
+        n = kwargs.pop('n', 1)
         for k, v in kwargs.items():
             if isinstance(v, torch.Tensor):
                 v = v.item()
             assert isinstance(v, (float, int))
-            self.meters[k].update(v)
+            self.meters[k].update(v, n=n)
 
     def __getattr__(self, attr):
         if attr in self.meters:
@@ -156,7 +157,7 @@ class MetricLogger(object):
             header, total_time_str, total_time / len(iterable)))
 
 
-def set_requires_grad(module, requires_grad=True): 
+def set_requires_grad(module, requires_grad=True):
     for p in module.parameters():
         p.requires_grad = requires_grad
 

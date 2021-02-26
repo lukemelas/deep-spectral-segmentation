@@ -44,7 +44,7 @@ def main(cfg: DictConfig):
 
     # Logging
     if utils.is_main_process():
-        wandb.init(project='project', name=cfg.name, job_type='train', config=cfg, save_code=True)
+        wandb.init(project='template', name=cfg.name, job_type='train', config=cfg, save_code=True)
 
     # Model
     model = SimpleModel()
@@ -163,6 +163,8 @@ def main(cfg: DictConfig):
             if test_stats['acc'] > best_run:
                 best_run = test_stats['acc']
                 utils.save_on_master(checkpoint_dict, 'checkpoint-best.pth')
+            if utils.is_main_process():
+                wandb.log(test_stats)
         if utils.is_main_process():
             wandb.run.summary["best_run"] = best_run
 
@@ -213,7 +215,7 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
+    print("Averaged train stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
@@ -236,7 +238,7 @@ def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device
         torch.cuda.synchronize()
 
         # Validation metrics
-        acc = (torch.argmax(output) == target).float().mean()
+        acc = (torch.argmax(output, dim=1) == target).float().mean()
 
         # Logging
         batch_size = len(input)
@@ -245,7 +247,7 @@ def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
+    print("Averaged val stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 

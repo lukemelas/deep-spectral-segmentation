@@ -50,6 +50,8 @@ python main.py eval=True
 CUDA_VISIBLE_DEVICES=1 python main.py --config-name="debug.yaml" data.train.root="/home/luke/machine-learning-datasets/image-classification/imagenet/val" data.val.root="/home/luke/machine-learning-datasets/image-classification/imagenet/val" data.loader.batch_size=256 data.loader.num_workers=16 data.loader.pin_memory=True optimizer.lr=1e-3
 ```
 
+Example run [here](https://wandb.ai/lukemelas2/template/runs/1huwqeth).
+
 
 #### Pretrained models
 

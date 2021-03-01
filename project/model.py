@@ -5,9 +5,9 @@ from torchvision import models
 
 
 class SimpleModel(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=1000, pretrained=False):
         super().__init__()
-        self.model = models.resnet18(pretrained=False)
+        self.model = models.resnet18(pretrained=pretrained, num_classes=num_classes)
 
     def forward(self, input, target=None):
         output = self.model(input)

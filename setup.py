@@ -3,7 +3,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='project',
+    name='template',
     version='0.0.1',
     description='Project',
     author='Luke Melas-Kyriazi',

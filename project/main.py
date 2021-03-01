@@ -7,10 +7,14 @@ from typing import Iterable, Optional
 
 import torch
 from torch import nn
-from torch import einsum
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from torchvision import transforms
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+import hydra
+from omegaconf import OmegaConf, DictConfig
+import wandb
 
 import timm
 from timm.utils import ModelEmaV2, NativeScaler
@@ -21,18 +25,18 @@ import utils
 from model import SimpleModel
 from dataset import SimpleDataset
 
-import hydra
-from omegaconf import OmegaConf, DictConfig
-import wandb
-
 
 @hydra.main(config_path='config', config_name='default')
 def main(cfg: DictConfig):
 
     # Distributed
-    utils.init_distributed_mode(cfg)
+    if cfg.distributed.enabled:
+        utils.init_distributed_mode(cfg)
     device = torch.device('cuda')
-    print()
+
+    # Logging
+    if utils.is_main_process():
+        wandb.init(project='template', name=cfg.name, job_type='train', config=cfg, save_code=True)
 
     # Configuration
     print(OmegaConf.to_yaml(cfg))
@@ -40,17 +44,12 @@ def main(cfg: DictConfig):
     # Set random seed
     utils.set_seed(cfg.seed)
 
-    # Logging
-    if utils.is_main_process():
-        wandb.init(project='template', name=cfg.name, job_type='train', config=cfg, save_code=True)
-
     # Model
-    model = SimpleModel()
+    model = SimpleModel(**cfg.model)
     model.to(device)
 
-    # Model EMA
-    # NOTE: It is important to create EMA model after cuda(), DP wrapper, and
-    # AMP but before SyncBN and DDP wrapper
+    # Model EMA -- note that it is important to create EMA model after cuda(),
+    # DP wrapper, and AMP but before SyncBN and DDP wrapper
     model_ema = None
     if cfg.ema.enabled:
         model_ema = ModelEmaV2(model, decay=cfg.ema.decay, device=cfg.ema.device)
@@ -65,43 +64,54 @@ def main(cfg: DictConfig):
     print(f'Parameters (total): {sum(p.numel() for p in model.parameters()):12d}')
     print(f'Parameters (train): {sum(p.numel() for p in model.parameters() if p.requires_grad):12d}')
 
-    # Optimizer
+    # Optimizer and scheduler
     optimizer = create_optimizer(cfg.optimizer, model_without_ddp)
-    lr_scheduler, _ = create_scheduler(cfg.scheduler, optimizer)
-    loss_scaler = NativeScaler()
+    scheduler, _ = create_scheduler(cfg.scheduler, optimizer)
+
+    # Native mixed precision
+    if cfg.amp:
+        loss_scaler = NativeScaler()
+    else:
+        loss_scaler = None
 
     # Resume from checkpoint
     start_epoch = 0
-    if cfg.model.resume:
-        checkpoint = torch.load(cfg.model.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+    if cfg.checkpoint.resume:
+        checkpoint = torch.load(cfg.checkpoint.resume, map_location='cpu')
+        state_dict = checkpoint['model'] if hasattr(checkpoint, 'model') else checkpoint
+        state_dict.pop('fc.weight')
+        state_dict.pop('fc.bias')
+        missing_keys, unexpected_keys = model_without_ddp.load_state_dict(state_dict, strict=False)
         print('Loaded model checkpoint')
-        if not cfg.eval and {'optimizer', 'lr_scheduler', 'epoch'}.subsubset(set(checkpoint.keys())):
+        if len(missing_keys):
+            print(f' - Missing_keys: {missing_keys}')
+        if len(unexpected_keys):
+            print(f' - Unexpected_keys: {unexpected_keys}')
+        if not cfg.eval and {'optimizer', 'scheduler', 'epoch'}.issubset(set(checkpoint.keys())):
             optimizer.load_state_dict(checkpoint['optimizer'])
-            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
             start_epoch = checkpoint['epoch']
             print('Loaded optimizer/scheduler from checkpoint')
             if cfg.ema.enabled and checkpoint['model_ema'] is not None:
                 model_ema.load_state_dict(checkpoint['model_ema'])
                 print('Loaded model ema from checkpoint')
 
-    # Data
-    crop_size = cfg.data.image.crop_size
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(crop_size),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))])
-    val_transform = transforms.Compose([
-        transforms.Resize(crop_size),
-        transforms.CenterCrop(crop_size),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))])
-    dataset_train = SimpleDataset(
-        root=cfg.data.train.root,
-        transform=train_transform)
-    dataset_val = SimpleDataset(
-        root=cfg.data.val.root,
-        transform=val_transform)
+    # Transforms
+    train_transform = A.Compose([
+        A.RandomResizedCrop(cfg.data.transform.crop_size, cfg.data.transform.crop_size),
+        A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std),
+        ToTensorV2(),
+    ])
+    val_transform = A.Compose([
+        A.Resize(cfg.data.transform.resize_size, cfg.data.transform.resize_size),
+        A.CenterCrop(cfg.data.transform.crop_size, cfg.data.transform.crop_size),
+        A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std),
+        ToTensorV2(),
+    ])
+
+    # Datasets
+    dataset_train = SimpleDataset(root=cfg.data.train.root, transform=train_transform)
+    dataset_val = SimpleDataset(root=cfg.data.val.root, transform=val_transform)
 
     # Distributed sampler
     if cfg.distributed.enabled:
@@ -120,8 +130,8 @@ def main(cfg: DictConfig):
 
     # Evaluation
     if cfg.eval:
-        raise NotImplementedError()
-        # test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(cfg=cfg, model=model, loader=data_loader_val, device=device)
+        return test_stats['top1']
 
     # Training
     best_run = 0
@@ -132,23 +142,26 @@ def main(cfg: DictConfig):
 
         # Single epoch of training
         train_stats = train_one_epoch(
+            cfg=cfg,
             model=model,
-            data_loader=data_loader_train,
+            loader=data_loader_train,
             optimizer=optimizer,
+            scheduler=scheduler,
+            loss_scaler=loss_scaler,
             device=device,
             epoch=epoch,
-            loss_scaler=loss_scaler,
-            max_norm=cfg.optimizer.clip_grad,
             model_ema=model_ema)
 
-        # Learning rate
-        lr_scheduler.step(epoch)
+        # Learning rate scheduler - note that if you use a PyTorch scheduler
+        # instead of a timm optimizer, you probably just want to call .step()
+        # without the epoch argument
+        scheduler.step(epoch)
 
         # Checkpoint
         checkpoint_dict = {
             'model': model_without_ddp.state_dict(),
             'optimizer': optimizer.state_dict(),
-            'lr_scheduler': lr_scheduler.state_dict(),
+            'scheduler': scheduler.state_dict(),
             'epoch': epoch,
             'model_ema': model_ema.state_dict() if model_ema else None,
             'cfg': cfg,
@@ -157,35 +170,49 @@ def main(cfg: DictConfig):
 
         # Evaluate
         if True:  # (5 < epoch < 275) and (epoch) % 5 != 0:
-            test_stats = evaluate(model, data_loader_val, device)
-            if test_stats['acc'] > best_run:
-                best_run = test_stats['acc']
+            test_stats = evaluate(cfg=cfg, model=model, loader=data_loader_val, device=device)
+            if test_stats['top1'] > best_run:
+                best_run = test_stats['top1']
                 utils.save_on_master(checkpoint_dict, 'checkpoint-best.pth')
-            if utils.is_main_process():
-                wandb.log(test_stats)
         if utils.is_main_process():
             wandb.run.summary["best_run"] = best_run
 
 
-def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler, max_norm: Optional[float] = None,
-                    model_ema: Optional[ModelEmaV2] = None):
+def train_one_epoch(
+    *,
+    cfg: DictConfig,
+    model: torch.nn.Module,
+    loader: Iterable,
+    optimizer: torch.optim.Optimizer,
+    scheduler: object,
+    device: torch.device,
+    epoch: int,
+    model_ema: Optional[ModelEmaV2] = None,
+    loss_scaler: Optional[object] = None
+):
 
     # Train mode
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 50
 
     # Train
-    for i, (input, target) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+    for i, (input, target) in enumerate(metric_logger.log_every(loader, cfg.logging.print_freq, header)):
         input = input.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
         # Forward
-        with torch.cuda.amp.autocast():
-            loss = model(input, target=target)
+        if cfg.amp:
+            with torch.cuda.amp.autocast():
+                output = model(input)
+                loss = F.cross_entropy(output, target)
+        else:
+            output = model(input)
+            loss = F.cross_entropy(output, target)
+
+        # Measure accuracy
+        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
 
         # Exit if loss is NaN
         loss_value = loss.item()
@@ -193,12 +220,17 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
             print("Loss is {}, stopping training".format(loss_value))
             sys.exit(1)
 
-        # Loss scaling
-        # NOTE: is_second_order is for one optimizer (adahessian) only
+        # Loss scaling and backward
         optimizer.zero_grad()
-        is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
-        loss_scaler(loss, optimizer, clip_grad=max_norm,
-                    parameters=model.parameters(), create_graph=is_second_order)
+        if cfg.amp:
+            is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
+            loss_scaler(
+                loss, optimizer, clip_grad=cfg.optimizer.clip_grad, parameters=model.parameters(), create_graph=is_second_order)
+        else:
+            loss.backward()
+            if cfg.optimizer.clip_grad is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.optimizer.clip_grad)
+            optimizer.step()
         torch.cuda.synchronize()
 
         # Model EMA
@@ -206,46 +238,49 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
             model_ema.update(model)
 
         # Logging
-        metric_logger.update(loss=loss_value)
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        log_dict = dict(train_loss=loss_value, lr=optimizer.param_groups[0]["lr"], top1=acc1[0], top5=acc5[0])
+        metric_logger.update(**log_dict)
         if utils.is_main_process():
-            wandb.log({'train_loss': loss_value, 'lr': optimizer.param_groups[0]["lr"]})
+            wandb.log(log_dict)
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes()
-    print("Averaged train stats:", metric_logger)
+    print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device):
+def evaluate(
+    *,
+    cfg: DictConfig,
+    model: torch.nn.Module,
+    loader: Iterable,
+    device: torch.device,
+):
 
     # Eval mode
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Val'
-    print_freq = 50
-    for i, (input, target) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+    for i, (input, target) in enumerate(metric_logger.log_every(loader, cfg.logging.print_freq, header)):
         input = input.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
         # Forward
-        with torch.cuda.amp.autocast():
-            output = model(input)
-            loss = model.loss(output=output, target=target)
+        output = model(input)
+        loss = F.cross_entropy(output, target)
         torch.cuda.synchronize()
 
-        # Validation metrics
-        acc = (torch.argmax(output, dim=1) == target).float().mean()
+        # Measure accuracy
+        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
 
         # Logging
-        batch_size = len(input)
-        metric_logger.update(loss=loss.item(), n=batch_size)
-        metric_logger.update(acc=acc.item(), n=batch_size)
+        log_dict = dict(val_loss=loss.item(), top1=acc1[0], top5=acc5[0])
+        metric_logger.update(**log_dict, n=len(input))  # update with batch size
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes()
-    print("Averaged val stats:", metric_logger)
+    print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 

@@ -1,7 +1,9 @@
 # Custom
+.vscode
+wandb
 outputs
 tmp*
-.vscode
+slurm-logs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

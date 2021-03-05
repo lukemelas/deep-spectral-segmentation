@@ -127,7 +127,9 @@ def main(cfg: DictConfig):
     # Dataloader
     data_loader_train = DataLoader(dataset_train, sampler=sampler_train, drop_last=True, **cfg.data.loader)
     data_loader_val = DataLoader(dataset_val, sampler=sampler_val, drop_last=False, **cfg.data.loader)
-
+    print(f'Train dataset / dataloader size: {len(dataset_train)} / {len(data_loader_train)}')
+    print(f'Val dataset / dataloader size: {len(dataset_val)} / {len(data_loader_val)}')
+    
     # Evaluation
     if cfg.eval:
         test_stats = evaluate(cfg=cfg, model=model, loader=data_loader_val, device=device)

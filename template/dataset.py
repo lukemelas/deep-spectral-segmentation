@@ -1,10 +1,10 @@
 import os
 import os.path
+import random
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from pathlib import Path
 import torch
 from torch.utils.data import Dataset
-from torchvision import transforms
 from torchvision.datasets.folder import (
     default_loader, VisionDataset, make_dataset, IMG_EXTENSIONS, default_loader
 )
@@ -48,14 +48,40 @@ class SimpleDataset(VisionDataset):
         return len(self.samples)
 
 
+class ZipDataset(torch.utils.data.Dataset):
+    def __init__(self, datasets, transform=None) -> None:
+        super().__init__()
+        self.datasets = datasets
+        self.transform = transform
+        self.length = len(datasets[0])
+        for dataset in datasets:
+            assert len(dataset) <= self.length, 'different sized datasets'
+
+    def __getitem__(self, index):
+        samples = [dataset[index] for dataset in self.datasets]
+        if self.transform is not None:
+            samples = self.transform(*samples)
+        return samples
+
+    def __len__(self):
+        return self.length
+
+
 if __name__ == "__main__":
-    transform = transforms.ToTensor()
-    dataset = SimpleDataset(
+    import albumentations as A
+    from albumentations.pytorch import ToTensorV2
+    val_transform = A.Compose([
+        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)), ToTensorV2()])
+    dataset_1 = SimpleDataset(
         root="/home/luke/machine-learning-datasets/image-classification/imagenet/val",
-        transform=transform)
+        transform=val_transform)
+    dataset_2 = SimpleDataset(
+        root="/home/luke/machine-learning-datasets/image-classification/imagenet/val",
+        transform=val_transform)
+    dataset = ZipDataset([dataset_1, dataset_2])
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
-    image, target = next(iter(dataloader))
+    (image_1, target_1), (image_2, target_2) = next(iter(dataloader))
     print('dataset loading test complete')
-    print(image.shape, target.shape)
+    print(image_1.shape, target_1.shape, image_2.shape, target_2.shape)
     import pdb
     pdb.set_trace()

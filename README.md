@@ -37,6 +37,9 @@ Conference
 python main.py 
 ```
 
+```bash
+python -m torch.distributed.launch --use_env --nproc_per_node=8 --master_port=5432 main.py
+```
 
 #### Evaluation
 <!-- TODO: Add description -->

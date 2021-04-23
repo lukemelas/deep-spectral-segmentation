@@ -194,7 +194,7 @@ def train_one_epoch(
             wandb.log(log_dict)
 
     # Gather stats from all processes
-    # metric_logger.synchronize_between_processes()  # TODO
+    metric_logger.synchronize_between_processes(device=accelerator.device)
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
@@ -227,8 +227,7 @@ def evaluate(
         metric_logger.update(**log_dict, n=len(input))  # update with batch size
 
     # Gather stats from all processes
-    # metric_logger.synchronize_between_processes()  # TODO
-    print("Averaged stats:", metric_logger)
+    metric_logger.synchronize_between_processes(device=accelerator.device)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 

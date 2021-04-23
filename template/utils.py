@@ -47,13 +47,14 @@ class SmoothedValue(object):
         self.count += n
         self.total += value * n
 
-    def synchronize_between_processes(self):
+    def synchronize_between_processes(self, device='cuda'):
         """
         Warning: does not synchronize the deque!
         """
-        if not is_dist_avail_and_initialized():
+        if not using_distributed():
             return
-        t = torch.tensor([self.count, self.total], dtype=torch.float64, device='cuda')
+        print(f"device={device}")
+        t = torch.tensor([self.count, self.total], dtype=torch.float64, device=device)
         dist.barrier()
         dist.all_reduce(t)
         t = t.tolist()
@@ -120,9 +121,9 @@ class MetricLogger(object):
             )
         return self.delimiter.join(loss_str)
 
-    def synchronize_between_processes(self):
+    def synchronize_between_processes(self, device='cuda'):
         for meter in self.meters.values():
-            meter.synchronize_between_processes()
+            meter.synchronize_between_processes(device=device)
 
     def add_meter(self, name, meter):
         self.meters[name] = meter

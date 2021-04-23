@@ -12,21 +12,21 @@ import torch
 import torch.distributed as dist
 
 
+@torch.no_grad()
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
-    with torch.no_grad():
-        maxk = max(topk)
-        batch_size = target.size(0)
+    maxk = max(topk)
+    batch_size = target.size(0)
 
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
 
-        res = []
-        for k in topk:
-            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
-        return res
+    res = []
+    for k in topk:
+        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+        res.append(correct_k.mul_(100.0 / batch_size))
+    return res
 
 
 class SmoothedValue(object):
@@ -179,17 +179,32 @@ def set_requires_grad(module, requires_grad=True):
         p.requires_grad = requires_grad
 
 
-def _load_checkpoint_for_ema(model_ema, checkpoint):
-    """
-    Workaround for ModelEma._load_checkpoint to accept an already-loaded object
-    """
-    mem_file = io.BytesIO()
-    torch.save(checkpoint, mem_file)
-    mem_file.seek(0)
-    model_ema._load_checkpoint(mem_file)
+def resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema):
+    checkpoint = torch.load(cfg.checkpoint.resume, map_location='cpu')
+    state_dict = checkpoint['model'] if 'model' in checkpoint else checkpoint
+    state_dict.pop('fc.weight')
+    state_dict.pop('fc.bias')
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    print('Loaded model checkpoint')
+    if len(missing_keys):
+        print(f' - Missing_keys: {missing_keys}')
+    if len(unexpected_keys):
+        print(f' - Unexpected_keys: {unexpected_keys}')
+    if not cfg.eval and {'optimizer', 'scheduler', 'epoch'}.issubset(set(checkpoint.keys())):
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        start_epoch = checkpoint['epoch']
+        print('Loaded optimizer/scheduler from checkpoint')
+        if cfg.ema.enabled and checkpoint['model_ema'] is not None:
+            model_ema.load_state_dict(checkpoint['model_ema'])
+            print('Loaded model ema from checkpoint')
+    else:
+        start_epoch = 0
+        print('Did not resume optimizer/scheduler/epoch/ema')
+    return start_epoch
 
 
-def setup_for_distributed(is_master):
+def setup_distributed_print(is_master):
     """
     This function disables printing when not in master process
     """
@@ -204,28 +219,12 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
-def is_dist_avail_and_initialized():
-    if not dist.is_available():
-        return False
-    if not dist.is_initialized():
-        return False
-    return True
-
-
-def get_world_size():
-    if not is_dist_avail_and_initialized():
-        return 1
-    return dist.get_world_size()
+def using_distributed():
+    return dist.is_available() and dist.is_initialized()
 
 
 def get_rank():
-    if not is_dist_avail_and_initialized():
-        return 0
-    return dist.get_rank()
-
-
-def is_main_process():
-    return get_rank() == 0
+    return dist.get_rank() if using_distributed() else 0
 
 
 def set_seed(seed):
@@ -237,41 +236,8 @@ def set_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
-    if is_dist_avail_and_initialized():
+    if using_distributed():
         print(f'Seeding node {rank} with seed {seed}', force=True)
     else:
         print(f'Seeding node {rank} with seed {seed}')
 
-
-def save_on_master(*args, **kwargs):
-    if is_main_process():
-        torch.save(*args, **kwargs)
-
-
-def init_process(cfg):
-    torch.cuda.set_device(cfg.distributed.gpu)
-    print('Init distributed mode (rank {}): {}'.format(cfg.distributed.rank, cfg.distributed.dist_url))
-    torch.distributed.init_process_group(
-        backend=cfg.distributed.dist_backend,
-        init_method=cfg.distributed.dist_url,
-        world_size=cfg.distributed.world_size,
-        rank=cfg.distributed.rank)
-    torch.distributed.barrier()
-    setup_for_distributed(cfg.distributed.rank == 0)
-
-
-def init_distributed_mode(cfg):
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        cfg.distributed.rank = int(os.environ["RANK"])
-        cfg.distributed.world_size = int(os.environ['WORLD_SIZE'])
-        cfg.distributed.gpu = int(os.environ['LOCAL_RANK'])
-        cfg.distributed.enabled = True
-        init_process(cfg)
-    elif 'SLURM_PROCID' in os.environ:
-        cfg.distributed.rank = int(os.environ['SLURM_PROCID'])
-        cfg.distributed.gpu = cfg.distributed.rank % torch.cuda.device_count()
-        cfg.distributed.enabled = True
-        init_process(cfg)
-    else:
-        print('Not using distributed mode')
-        cfg.distributed.enabled = False

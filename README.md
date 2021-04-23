@@ -27,7 +27,7 @@ Conference
 <!-- TODO: Add description -->
  - PyTorch (tested on version 1.7.1, but should work on any version)
  - Hydra: `pip install hydra-core --pre`
- - Other: `pip install albumentations tqdm tensorboard`
+ - Other: `pip install albumentations tqdm tensorboard accelerate`
  - PyTorch Image Models: `pip install timm`
  - WandB (optional): `pip install wandb`
 

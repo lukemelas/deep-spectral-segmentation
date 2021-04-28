@@ -164,7 +164,7 @@ def train_one_epoch(
 
     # Train
     for i, (input, target) in enumerate(metric_logger.log_every(loader, cfg.logging.print_freq, header)):
-
+        
         # Forward
         output = model(input)
         loss = F.cross_entropy(output, target)
@@ -181,6 +181,7 @@ def train_one_epoch(
         # Loss scaling and backward
         accelerator.backward(loss)
         optimizer.step()
+        optimizer.zero_grad()
         torch.cuda.synchronize()
 
         # Model EMA

@@ -39,11 +39,12 @@ ema:
   device: 'cpu'
 
 optimizer:
-  opt: 'adamw'
-  lr: 1e-3
-  momentum: 0.9
-  weight_decay: 5e-4
-  clip_grad: null
+  kwargs:
+    optimizer_name: 'AdamW'
+    learning_rate: 1e-3
+    weight_decay: 0.0
+    momentum: 0.9
+    filter_bias_and_bn: True
 
 scheduler:
   epochs: 100

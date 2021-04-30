@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from timm.utils import ModelEmaV2
-from timm.optim import create_optimizer
+from timm.optim import create_optimizer_v2
 from timm.scheduler import create_scheduler
 from accelerate import Accelerator
 from contexttimer import Timer
@@ -55,7 +55,7 @@ def main(cfg: DictConfig):
         print('Initialized model EMA')
     
     # Optimizer and scheduler
-    optimizer = create_optimizer(cfg.optimizer, model)
+    optimizer = create_optimizer_v2(model, **cfg.optimizer.kwargs)
     scheduler, _ = create_scheduler(cfg.scheduler, optimizer)
 
     # Resume from checkpoint

@@ -9,17 +9,3 @@ hydra:
       WANDB_MODE: dryrun
 
 name: "debug"
-
-data:
-  num_classes: 1000
-  train:
-    root: ""
-  val:
-    root: ""
-  # loader:
-    # batch_size: 1
-    # num_workers: 0
-    # pin_memory: False
-
-checkpoint:
-  resume: null

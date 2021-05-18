@@ -59,3 +59,6 @@ scheduler:
 
 logging:
   print_freq: 50 
+
+vis:
+  num_images: 4

@@ -4,9 +4,8 @@ import math
 import datetime
 from pathlib import Path
 from typing import Iterable, Optional
-
+from PIL import Image
 import torch
-from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 import albumentations as A
@@ -30,7 +29,7 @@ def main(cfg: DictConfig):
 
     # Accelerator
     accelerator = Accelerator(fp16=cfg.fp16, cpu=cfg.cpu)
-    
+
     # Logging
     utils.setup_distributed_print(accelerator.is_local_main_process)
     if cfg.wandb and accelerator.is_local_main_process:
@@ -53,7 +52,7 @@ def main(cfg: DictConfig):
     if cfg.ema.enabled:
         model_ema = ModelEmaV2(model, decay=cfg.ema.decay, device=cfg.ema.device)
         print('Initialized model EMA')
-    
+
     # Optimizer and scheduler
     optimizer = create_optimizer_v2(model, **cfg.optimizer.kwargs)
     scheduler, _ = create_scheduler(cfg.scheduler, optimizer)
@@ -62,19 +61,19 @@ def main(cfg: DictConfig):
     start_epoch = 0
     if cfg.checkpoint.resume:
         start_epoch = utils.resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema)
-        
+
     # Transforms
+    crop_size, resize_size = cfg.data.transform.crop_size, cfg.data.transform.resize_size
     train_transform = A.Compose([
-        A.RandomResizedCrop(cfg.data.transform.crop_size, cfg.data.transform.crop_size),
+        A.RandomResizedCrop(crop_size, crop_size),
+        A.HorizontalFlip(),
         A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std),
-        ToTensorV2(),
-    ])
+        ToTensorV2()])
     val_transform = A.Compose([
-        A.Resize(cfg.data.transform.resize_size, cfg.data.transform.resize_size),
-        A.CenterCrop(cfg.data.transform.crop_size, cfg.data.transform.crop_size),
+        A.Resize(resize_size, resize_size),
+        A.CenterCrop(crop_size, crop_size),
         A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std),
-        ToTensorV2(),
-    ])
+        ToTensorV2()])
 
     # Datasets
     with Timer(prefix="Loading data..."):
@@ -87,14 +86,25 @@ def main(cfg: DictConfig):
     dataloader_val = DataLoader(dataset_val, shuffle=False, drop_last=False, **cfg.data.loader)
     print(f'Dataloader train size: {len(dataloader_train):_} ({dataloader_train.batch_size})')
     print(f'Dataloader val size: {len(dataloader_val):_} ({dataloader_val.batch_size})')
-    
+
     # Setup
     model, optimizer, dataloader_train, dataloader_val = accelerator.prepare(
         model, optimizer, dataloader_train, dataloader_val)
 
+    # Shared training, evaluation, and visualization args
+    kwargs = dict(
+        cfg=cfg,
+        model=model,
+        train_loader=dataloader_train,
+        val_loader=dataloader_val,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        accelerator=accelerator,
+        model_ema=model_ema)
+
     # Evaluation
     if cfg.eval:
-        test_stats = evaluate(cfg=cfg, model=model, loader=dataloader_val, accelerator=accelerator)
+        test_stats = evaluate(**kwargs)
         return test_stats['top1']
 
     # Training
@@ -102,16 +112,11 @@ def main(cfg: DictConfig):
     print(f"Starting training at {datetime.datetime.now()}")
     for epoch in range(start_epoch, cfg.scheduler.epochs):
 
+        # Visualize (before training)
+        visualize(**kwargs, epoch=epoch)
+
         # Single epoch of training
-        train_stats = train_one_epoch(
-            cfg=cfg,
-            model=model,
-            loader=dataloader_train,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            accelerator=accelerator,
-            epoch=epoch,
-            model_ema=model_ema)
+        train_one_epoch(**kwargs, epoch=epoch)
 
         # Learning rate scheduler - note that if you use a PyTorch scheduler
         # instead of a timm optimizer, you probably just want to call .step()
@@ -127,7 +132,7 @@ def main(cfg: DictConfig):
             'model_ema': model_ema.state_dict() if model_ema else {},
             'cfg': cfg
         }
-        
+
         # Save on only 1 process
         if accelerator.is_local_main_process:
             print('Saving checkpoint...')
@@ -135,7 +140,7 @@ def main(cfg: DictConfig):
 
         # Evaluate
         if True:  # (5 < epoch < 275) and (epoch) % 5 != 0:
-            test_stats = evaluate(cfg=cfg, model=model, loader=dataloader_val, accelerator=accelerator, header=f'Val [{epoch}]')
+            test_stats = evaluate(**kwargs, header=f'Val [{epoch}]')
             if accelerator.is_local_main_process:
                 if test_stats['top1'] > best_top1:
                     best_top1 = test_stats['top1']
@@ -146,25 +151,25 @@ def main(cfg: DictConfig):
 
 
 def train_one_epoch(
-    *,
-    cfg: DictConfig,
-    model: torch.nn.Module,
-    loader: Iterable,
-    optimizer: torch.optim.Optimizer,
-    scheduler: object,
-    accelerator: Accelerator,
-    epoch: int,
-    model_ema: Optional[ModelEmaV2] = None):
+        *,
+        cfg: DictConfig,
+        model: torch.nn.Module,
+        train_loader: Iterable,
+        optimizer: torch.optim.Optimizer,
+        accelerator: Accelerator,
+        epoch: int,
+        model_ema: Optional[ModelEmaV2] = None,
+        **_unused_kwargs):
 
     # Train mode
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    header = 'Epoch: [{}]'.format(epoch)
+    progress_bar = metric_logger.log_every(train_loader, cfg.logging.print_freq, header=f'Epoch: [{epoch}]')
 
     # Train
-    for i, (input, target) in enumerate(metric_logger.log_every(loader, cfg.logging.print_freq, header)):
-        
+    for i, (input, target) in enumerate(progress_bar):
+
         # Forward
         output = model(input)
         loss = F.cross_entropy(output, target)
@@ -189,7 +194,8 @@ def train_one_epoch(
             model_ema.update(model)
 
         # Logging
-        log_dict = dict(lr=optimizer.param_groups[0]["lr"], train_loss=loss_value, train_top1=acc1[0], train_top5=acc5[0])
+        log_dict = dict(lr=optimizer.param_groups[0]["lr"],
+                        train_loss=loss_value, train_top1=acc1[0], train_top5=acc5[0])
         metric_logger.update(**log_dict)
         if cfg.wandb and accelerator.is_local_main_process:
             wandb.log(log_dict)
@@ -202,17 +208,20 @@ def train_one_epoch(
 
 @torch.no_grad()
 def evaluate(
-    *,
-    cfg: DictConfig,
-    model: torch.nn.Module,
-    loader: Iterable,
-    accelerator: Accelerator,
-    header: str = 'Eval'):
+        *,
+        cfg: DictConfig,
+        model: torch.nn.Module,
+        val_loader: Iterable,
+        accelerator: Accelerator,
+        header: str = 'Eval',
+        **_unused_kwargs):
 
     # Eval mode
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
-    progress_bar = enumerate(metric_logger.log_every(loader, cfg.logging.print_freq, header))
+    progress_bar = enumerate(metric_logger.log_every(val_loader, cfg.logging.print_freq, header))
+
+    # Evaluate
     for i, (input, target) in progress_bar:
 
         # Forward
@@ -230,6 +239,48 @@ def evaluate(
     # Gather stats from all processes
     metric_logger.synchronize_between_processes(device=accelerator.device)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
+@torch.no_grad()
+def visualize(
+        *,
+        cfg: DictConfig,
+        model: torch.nn.Module,
+        val_loader: Iterable,
+        accelerator: Accelerator,
+        epoch=0,
+        **_unused_kwargs):
+
+    # Load images for visualization
+    model.eval()
+    batch_idx = min(15, len(val_loader) - 1)  # Let's not get the first batch
+    x, _ = next(batch for i, batch in enumerate(iter(val_loader)) if i == batch_idx)
+    x = x[:cfg.vis.num_images]  # truncate batch
+
+    # Inverse normalization
+    Inv = utils.NormalizeInverse(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std)
+    x = Inv(x).clamp(0, 1)
+
+    # Lists for logging
+    img_list = [x]
+    name_list = ['x']
+
+    # Save only on the main single GPU
+    if accelerator.is_local_main_process:
+        wandb_log_dict = {}
+        for x, name in zip(img_list, name_list):
+            x = x.detach().cpu().requires_grad_(False)
+            for i, x_i in enumerate(x):
+                ndarr = x_i.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to(torch.uint8).numpy()
+                pil_img = Image.fromarray(ndarr)
+                filename = f'vis/{name}/img-{i}-{name}-{epoch:04d}.png'
+                Path(filename).parent.mkdir(exist_ok=True, parents=True)
+                pil_img.save(filename)
+                if i < 2:  # log to weights and biases
+                    wandb_log_dict[f'img-{i}-{name}'] = [wandb.Image(pil_img)]
+        print(f'Saved visualization images (e.g. {filename})')
+        if cfg.wandb:
+            wandb.log(wandb_log_dict, commit=False)
 
 
 if __name__ == '__main__':

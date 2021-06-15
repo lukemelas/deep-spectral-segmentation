@@ -8,11 +8,6 @@ from PIL import Image
 import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-from timm.utils import ModelEmaV2
-from timm.optim import create_optimizer_v2
-from timm.scheduler import create_scheduler
 from accelerate import Accelerator
 from contexttimer import Timer
 import hydra
@@ -21,7 +16,7 @@ import wandb
 
 import utils
 from model import SimpleModel
-from dataset import SimpleDataset
+from dataset import SimpleDataset, get_transforms
 
 
 @hydra.main(config_path='config', config_name='default')
@@ -48,14 +43,16 @@ def main(cfg: DictConfig):
     print(f'Parameters (train): {sum(p.numel() for p in model.parameters() if p.requires_grad):_d}')
 
     # Exponential moving average of model parameters
-    model_ema = None
     if cfg.ema.enabled:
+        from timm.utils import ModelEmaV2
         model_ema = ModelEmaV2(model, decay=cfg.ema.decay, device=cfg.ema.device)
         print('Initialized model EMA')
+    else:
+        model_ema = None
 
     # Optimizer and scheduler
-    optimizer = create_optimizer_v2(model, **cfg.optimizer.kwargs)
-    scheduler, _ = create_scheduler(cfg.scheduler, optimizer)
+    optimizer = utils.get_optimizer(cfg, model, accelerator)
+    scheduler = utils.get_scheduler(cfg, optimizer)
 
     # Resume from checkpoint
     start_epoch = 0
@@ -63,17 +60,7 @@ def main(cfg: DictConfig):
         start_epoch = utils.resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema)
 
     # Transforms
-    crop_size, resize_size = cfg.data.transform.crop_size, cfg.data.transform.resize_size
-    train_transform = A.Compose([
-        A.RandomResizedCrop(crop_size, crop_size),
-        A.HorizontalFlip(),
-        A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std),
-        ToTensorV2()])
-    val_transform = A.Compose([
-        A.Resize(resize_size, resize_size),
-        A.CenterCrop(crop_size, crop_size),
-        A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std),
-        ToTensorV2()])
+    train_transform, val_transform = get_transforms(cfg)
 
     # Datasets
     with Timer(prefix="Loading data..."):
@@ -110,7 +97,7 @@ def main(cfg: DictConfig):
     # Training
     best_top1 = 0
     print(f"Starting training at {datetime.datetime.now()}")
-    for epoch in range(start_epoch, cfg.scheduler.epochs):
+    for epoch in range(start_epoch, cfg.epochs):
 
         # Visualize (before training)
         visualize(**kwargs, epoch=epoch)
@@ -123,19 +110,16 @@ def main(cfg: DictConfig):
         # without the epoch argument
         scheduler.step(epoch)
 
-        # Checkpoint
-        checkpoint_dict = {
-            'model': model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'scheduler': scheduler.state_dict(),
-            'epoch': epoch,
-            'model_ema': model_ema.state_dict() if model_ema else {},
-            'cfg': cfg
-        }
-
         # Save on only 1 process
         if accelerator.is_local_main_process:
             print('Saving checkpoint...')
+            checkpoint_dict = {
+                'model': accelerator.unwrap_model(model).state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'epoch': epoch,
+                'model_ema': model_ema.state_dict() if model_ema else {},
+                'cfg': cfg}
             torch.save(checkpoint_dict, 'checkpoint-latest.pth')
 
         # Evaluate
@@ -158,7 +142,7 @@ def train_one_epoch(
         optimizer: torch.optim.Optimizer,
         accelerator: Accelerator,
         epoch: int,
-        model_ema: Optional[ModelEmaV2] = None,
+        model_ema: Optional[object] = None,
         **_unused_kwargs):
 
     # Train mode

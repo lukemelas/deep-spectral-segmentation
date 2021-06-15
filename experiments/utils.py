@@ -5,10 +5,45 @@ import time
 from collections import defaultdict, deque
 import datetime
 import random
+from typing import Callable
 import numpy as np
 import torch
 import torch.distributed as dist
 import torchvision
+from accelerate import Accelerator
+from omegaconf import DictConfig
+
+
+def get_optimizer(cfg: DictConfig, model: torch.nn.Module, accelerator: Accelerator) -> torch.optim.Optimizer:
+    # Scale base learning rate by batch size
+    lr = accelerator.state.num_processes * cfg.data.loader.batch_size * cfg.optimizer.base_lr
+    print('lr = {ws} (num gpus) * {bs} (batch_size) * {blr} (base_lr) = {lr}'.format(
+        ws=accelerator.state.num_processes, bs=cfg.data.loader.batch_size, blr=cfg.optimizer.base_lr, lr=lr))
+    # Construct optimizer
+    if cfg.optimizer.kind == 'torch':
+        optimizer = getattr(torch.optim, cfg.optimizer.cls)(model.parameters(), lr=lr, **cfg.optimizer.kwargs)
+    elif cfg.optimizer.kind == 'timm':
+        from timm.optim import create_optimizer_v2
+        optimizer = create_optimizer_v2(model, learning_rate=lr, **cfg.optimizer.kwargs)
+    else:
+        raise NotImplementedError(f'invalid optimizer config: {cfg.optimizer}')
+    return optimizer
+
+
+def get_scheduler(cfg: DictConfig, optimizer: torch.optim.Optimizer) -> Callable:
+    if cfg.scheduler.kind == 'torch':
+        Sch = getattr(torch.optim.lr_scheduler, cfg.scheduler.cls)
+        scheduler = Sch(optimizer=optimizer, **cfg.scheduler.kwargs)
+        if cfg.scheduler.warmup:
+            from warmup_scheduler import GradualWarmupScheduler
+            scheduler = GradualWarmupScheduler(  # wrap scheduler with warmup
+                optimizer, multiplier=1, total_epoch=cfg.scheduler.warmup, after_scheduler=scheduler)
+    elif cfg.scheduler.kind == 'timm':
+        from timm.scheduler import create_scheduler
+        scheduler, _ = create_scheduler(optimizer=optimizer, args=cfg.scheduler.kwargs)
+    else:
+        raise NotImplementedError(f'invalid scheduler config: {cfg.scheduler}')
+    return scheduler
 
 
 @torch.no_grad()

@@ -1,14 +1,29 @@
 import os
 import os.path
-import random
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from pathlib import Path
+from omegaconf.dictconfig import DictConfig
 import torch
 from torch.utils.data import Dataset
-from torchvision.datasets.folder import (
-    default_loader, VisionDataset, make_dataset, IMG_EXTENSIONS, default_loader
-)
+from torchvision.datasets.folder import default_loader, VisionDataset, make_dataset, IMG_EXTENSIONS
 import cv2
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+
+def get_transforms(cfg: DictConfig):
+    crop_size, resize_size = cfg.data.transform.crop_size, cfg.data.transform.resize_size
+    train_transform = A.Compose([
+        A.RandomResizedCrop(crop_size, crop_size),
+        A.HorizontalFlip(),
+        A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std),
+        ToTensorV2()])
+    val_transform = A.Compose([
+        A.Resize(resize_size, resize_size),
+        A.CenterCrop(crop_size, crop_size),
+        A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std),
+        ToTensorV2()])
+    return train_transform, val_transform
 
 
 class SimpleDataset(VisionDataset):

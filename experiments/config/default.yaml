@@ -3,7 +3,7 @@ hydra:
   run:
     dir: ./outputs/${name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-name: "default"
+name: "debug"
 seed: 1
 eval: False
 fp16: False
@@ -13,9 +13,9 @@ wandb: False
 data:
   num_classes: 1000
   train:
-    root: ${env:IMAGENET_DIR}/val
+    root: ${oc.env:IMAGENET_DIR}/val
   val:
-    root: ${env:IMAGENET_DIR}/val
+    root: ${oc.env:IMAGENET_DIR}/val
   loader:
     batch_size: 256
     num_workers: 32
@@ -38,24 +38,27 @@ ema:
   decay: 0.99996
   device: 'cpu'
 
+epochs: 100
+
 optimizer:
+  kind: 'timm'
+  base_lr: 4e-6
   kwargs:
     optimizer_name: 'AdamW'
-    learning_rate: 1e-3
-    weight_decay: 0.0
-    momentum: 0.9
+    weight_decay: 0.00
+    betas: [0.9, 0.95]
     filter_bias_and_bn: True
 
 scheduler:
-  epochs: 100
-  sched: 'cosine'
-  min_lr: 1e-5
-  warmup_lr: 1e-6
-  decay_epochs: 30
-  warmup_epochs: 5
-  cooldown_epochs: 10
-  patience_epochs: 10
-  decay_rate: 0.1
+  kind: 'timm'
+  kwargs:
+    epochs: ${epochs}
+    sched: 'cosine'
+    min_lr: 1e-5
+    warmup_lr: 1e-6
+    warmup_epochs: 5
+    cooldown_epochs: 10
+    decay_rate: 0.1
 
 logging:
   print_freq: 50 

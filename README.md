@@ -1,3 +1,13 @@
+## Checklist
+
+### TODO:
+ - [ ] Thing 1
+ - [ ] Thing 2
+ - [ ] Thing 3
+
+
+-----
+
 <div align="center">    
  
 ## Project Name 
@@ -49,7 +59,7 @@ python -m torch.distributed.launch --use_env --nproc_per_node=8 --master_port=54
 #### Evaluation
 <!-- TODO: Add description -->
 ```bash
-python main.py eval=True
+python main.py job_type="eval"
 ```
 
 #### Pretrained models

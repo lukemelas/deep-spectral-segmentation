@@ -231,27 +231,43 @@ def set_requires_grad(module, requires_grad=True):
 
 
 def resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema):
+    # Resume model state dict
     checkpoint = torch.load(cfg.checkpoint.resume, map_location='cpu')
-    state_dict = checkpoint['model'] if 'model' in checkpoint else checkpoint
-    state_dict.pop('fc.weight')
-    state_dict.pop('fc.bias')
+    if cfg.checkpoint.resume_model_from_ema:
+        assert 'model_ema' in checkpoint
+        state_dict, key = checkpoint['model_ema'], 'model_ema'
+    elif 'model' in checkpoint:
+        state_dict, key = checkpoint['model'], 'model'
+    else:
+        state_dict, key = checkpoint, 'N/A'
+    if any(k.startswith('module.') for k in state_dict.keys()):
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        print('Removed "module." from checkpoint state dict')
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    print('Loaded model checkpoint')
+    print(f'Loaded model checkpoint key {key} from {cfg.checkpoint.resume}')
     if len(missing_keys):
         print(f' - Missing_keys: {missing_keys}')
     if len(unexpected_keys):
         print(f' - Unexpected_keys: {unexpected_keys}')
-    if not cfg.eval and {'optimizer', 'scheduler', 'epoch'}.issubset(set(checkpoint.keys())):
+    # Resume optimization
+    if cfg.checkpoint.resume_training and 'train' in cfg.job_type:
+        assert {'optimizer', 'scheduler', 'epoch'}.issubset(set(checkpoint.keys()))
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
-        start_epoch = checkpoint['epoch']
-        print('Loaded optimizer/scheduler from checkpoint')
-        if cfg.ema.enabled and checkpoint['model_ema'] is not None:
-            model_ema.load_state_dict(checkpoint['model_ema'])
-            print('Loaded model ema from checkpoint')
+        start_epoch = checkpoint['epoch'] + 1
+        print(f'Loaded optimizer/scheduler at epoch {start_epoch} from checkpoint')
     else:
         start_epoch = 0
-        print('Did not resume optimizer/scheduler/epoch/ema')
+        print('Not resuming training (i.e. optimizer/scheduler/epoch)')
+    # Resume model ema
+    if cfg.ema.enabled:
+        assert model_ema is not None
+        if checkpoint['model_ema']:
+            model_ema.load_state_dict(checkpoint['model_ema'])
+            print('Loaded model ema from checkpoint')
+        else:
+            model_ema.set(model)
+            print('No model ema in checkpoint; set model ema to model')
     return start_epoch
 
 

@@ -5,7 +5,7 @@ hydra:
 
 name: "debug"
 seed: 1
-eval: False
+job_type: 'train'
 fp16: False
 cpu: False
 wandb: False
@@ -32,11 +32,14 @@ model:
 
 checkpoint:
   resume: null
+  resume_training: True
+  resume_model_from_ema: False
 
-ema: 
-  enabled: false
-  decay: 0.99996
+ema:
+  enabled: True
+  decay: 0.999  # 0.99996
   device: 'cpu'
+  update_every: 100
 
 epochs: 100
 

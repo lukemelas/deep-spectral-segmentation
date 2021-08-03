@@ -64,7 +64,4 @@ scheduler:
     decay_rate: 0.1
 
 logging:
-  print_freq: 50 
-
-vis:
-  num_images: 4
+  print_freq: 50

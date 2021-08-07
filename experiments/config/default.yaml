@@ -37,11 +37,13 @@ checkpoint:
 
 ema:
   enabled: True
-  decay: 0.999  # 0.99996
+  decay: 0.999  # 0.99996 for EfficientNet
   device: 'cpu'
   update_every: 100
 
-epochs: 100
+epochs: null
+max_train_steps: null
+gradient_accumulation_steps: 1
 
 optimizer:
   kind: 'timm'
@@ -53,15 +55,24 @@ optimizer:
     filter_bias_and_bn: True
 
 scheduler:
-  kind: 'timm'
+  kind: 'transformers'
+  stepwise: True
   kwargs:
-    epochs: ${epochs}
-    sched: 'cosine'
-    min_lr: 1e-5
-    warmup_lr: 1e-6
-    warmup_epochs: 5
-    cooldown_epochs: 10
-    decay_rate: 0.1
+    name: linear
+    num_warmup_steps: 0
+    num_training_steps: ${max_train_steps}
+
+# scheduler:
+#   kind: 'timm'
+#   stepwise: False
+#   kwargs:
+#     epochs: ${epochs}
+#     sched: 'cosine'
+#     min_lr: 1e-5
+#     warmup_lr: 1e-6
+#     warmup_epochs: 5
+#     cooldown_epochs: 10
+#     decay_rate: 0.1
 
 logging:
   print_freq: 50

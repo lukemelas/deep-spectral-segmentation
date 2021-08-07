@@ -1,10 +1,11 @@
 """
 Misc functions, including distributed helpers, mostly from torchvision
 """
+import math
 import time
-from collections import defaultdict, deque
 import datetime
 import random
+from collections import defaultdict, deque
 from typing import Callable
 import numpy as np
 import torch
@@ -41,6 +42,9 @@ def get_scheduler(cfg: DictConfig, optimizer: torch.optim.Optimizer) -> Callable
     elif cfg.scheduler.kind == 'timm':
         from timm.scheduler import create_scheduler
         scheduler, _ = create_scheduler(optimizer=optimizer, args=cfg.scheduler.kwargs)
+    elif cfg.scheduler.kind == 'transformers':
+        from transformers import get_scheduler
+        scheduler = get_scheduler(optimizer=optimizer, **cfg.scheduler.kwargs)
     else:
         raise NotImplementedError(f'invalid scheduler config: {cfg.scheduler}')
     return scheduler
@@ -54,7 +58,7 @@ def accuracy(output, target, topk=(1,)):
 
     _, pred = output.topk(maxk, 1, True, True)
     pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
+    correct = pred.eq(target.reshape(1, -1).expand_as(pred))
 
     res = []
     for k in topk:
@@ -251,13 +255,16 @@ def resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema):
         print(f' - Unexpected_keys: {unexpected_keys}')
     # Resume optimization
     if cfg.checkpoint.resume_training and 'train' in cfg.job_type:
-        assert {'optimizer', 'scheduler', 'epoch'}.issubset(set(checkpoint.keys()))
+        assert {'optimizer', 'scheduler', 'epoch', 'step', 'best_val'}.issubset(set(checkpoint.keys()))
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
         start_epoch = checkpoint['epoch'] + 1
+        start_step = checkpoint['step']
+        best_val = checkpoint['best_val']
         print(f'Loaded optimizer/scheduler at epoch {start_epoch} from checkpoint')
     else:
-        start_epoch = 0
+        best_val = - math.inf
+        start_epoch = start_step = 0
         print('Not resuming training (i.e. optimizer/scheduler/epoch)')
     # Resume model ema
     if cfg.ema.enabled:
@@ -268,7 +275,7 @@ def resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema):
         else:
             model_ema.set(model)
             print('No model ema in checkpoint; set model ema to model')
-    return start_epoch
+    return start_epoch, start_step, best_val
 
 
 def setup_distributed_print(is_master):

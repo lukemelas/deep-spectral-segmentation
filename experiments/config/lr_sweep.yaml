@@ -1,0 +1,24 @@
+defaults:
+  - default
+
+# For more info, see:
+# https://hydra.cc/docs/next/plugins/optuna_sweeper/
+
+hydra:
+  sweeper:
+    sampler:
+      _target_: optuna.samplers.GridSampler  # optuna.samplers.TPESampler
+      seed: 123
+    direction: maximize # minimize
+    study_name: learning_rate_study
+    storage: null
+    n_trials: 20
+    n_jobs: 1
+    search_space:
+      optimizer.base_lr:
+        type: categorical
+        choices: [0.000005, 0.000010, 0.000050, 0.000100]
+
+max_train_steps: 1000
+ema:
+  enabled: False

@@ -41,8 +41,8 @@ ema:
   device: 'cpu'
   update_every: 100
 
-epochs: null
-max_train_steps: null
+max_train_steps: 100_000
+max_train_epochs: null
 gradient_accumulation_steps: 1
 
 optimizer:

@@ -5,14 +5,24 @@ import math
 import time
 import datetime
 import random
+from dataclasses import dataclass
 from collections import defaultdict, deque
-from typing import Callable
+from typing import Callable, Optional
+from PIL import Image
 import numpy as np
 import torch
 import torch.distributed as dist
 import torchvision
 from accelerate import Accelerator
 from omegaconf import DictConfig
+
+
+
+@dataclass
+class TrainState:
+    epoch: int = 0
+    step: int = 0
+    best_val: Optional[float] = None
 
 
 def get_optimizer(cfg: DictConfig, model: torch.nn.Module, accelerator: Accelerator) -> torch.optim.Optimizer:
@@ -253,19 +263,17 @@ def resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema):
         print(f' - Missing_keys: {missing_keys}')
     if len(unexpected_keys):
         print(f' - Unexpected_keys: {unexpected_keys}')
-    # Resume optimization
+    # Resume optimization state
     if cfg.checkpoint.resume_training and 'train' in cfg.job_type:
         assert {'optimizer', 'scheduler', 'epoch', 'step', 'best_val'}.issubset(set(checkpoint.keys()))
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
-        start_epoch = checkpoint['epoch'] + 1
-        start_step = checkpoint['step']
-        best_val = checkpoint['best_val']
-        print(f'Loaded optimizer/scheduler at epoch {start_epoch} from checkpoint')
+        epoch, step, best_val = checkpoint['epoch'] + 1, checkpoint['step'], checkpoint['best_val']
+        train_state = TrainState(epoch=epoch, step=step, best_val=best_val)
+        print(f'Loaded optimizer/scheduler at epoch {epoch} from checkpoint')
     else:
-        best_val = - math.inf
-        start_epoch = start_step = 0
-        print('Not resuming training (i.e. optimizer/scheduler/epoch)')
+        train_state = TrainState()
+        print('Did not resume training (i.e. optimizer/scheduler/epoch)')
     # Resume model ema
     if cfg.ema.enabled:
         assert model_ema is not None
@@ -275,7 +283,7 @@ def resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema):
         else:
             model_ema.set(model)
             print('No model ema in checkpoint; set model ema to model')
-    return start_epoch, start_step, best_val
+    return train_state
 
 
 def setup_distributed_print(is_master):
@@ -314,3 +322,10 @@ def set_seed(seed):
         print(f'Seeding node {rank} with seed {seed}', force=True)
     else:
         print(f'Seeding node {rank} with seed {seed}')
+
+
+def tensor_to_pil(image: torch.Tensor):
+    assert len(image.shape) and image.shape[0] == 3, f"{image.shape=}"
+    image = (image.float() * 0.5 + 0.5).clamp(0, 1).detach().cpu().requires_grad_(False)
+    ndarr = image.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
+    return Image.fromarray(ndarr)

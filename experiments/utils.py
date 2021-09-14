@@ -26,16 +26,26 @@ class TrainState:
 
 
 def get_optimizer(cfg: DictConfig, model: torch.nn.Module, accelerator: Accelerator) -> torch.optim.Optimizer:
-    # Scale base learning rate by batch size
-    lr = accelerator.state.num_processes * cfg.data.loader.batch_size * cfg.optimizer.base_lr
-    print('lr = {ws} (num gpus) * {bs} (batch_size) * {blr} (base_lr) = {lr}'.format(
-        ws=accelerator.state.num_processes, bs=cfg.data.loader.batch_size, blr=cfg.optimizer.base_lr, lr=lr))
+    # Determine the learning rate
+    assert ('absolute_lr' in cfg.optimizer) ^ ('base_lr' in cfg.optimizer)
+    if 'absolute_lr' in cfg.optimizer:  # take this learning rate as fixed
+        lr = cfg.optimizer.absolute_lr
+        print('lr = {lr}'.format(lr=lr))
+    else:  # scale base learning rate by batch size
+        lr = accelerator.state.num_processes * cfg.data.loader.batch_size * cfg.optimizer.base_lr
+        print('lr = {ws} (num gpus) * {bs} (batch_size) * {blr} (base_lr) = {lr}'.format(
+            ws=accelerator.state.num_processes, bs=cfg.data.loader.batch_size, blr=cfg.optimizer.base_lr, lr=lr))
     # Construct optimizer
     if cfg.optimizer.kind == 'torch':
-        optimizer = getattr(torch.optim, cfg.optimizer.cls)(model.parameters(), lr=lr, **cfg.optimizer.kwargs)
+        parameters = [p for p in model.parameters() if p.requires_grad]
+        optimizer = getattr(torch.optim, cfg.optimizer.cls)(parameters, lr=lr, **cfg.optimizer.kwargs)
     elif cfg.optimizer.kind == 'timm':
         from timm.optim import create_optimizer_v2
         optimizer = create_optimizer_v2(model, learning_rate=lr, **cfg.optimizer.kwargs)
+    elif cfg.optimizer.kind == 'transformers':
+        import transformers
+        parameters = [p for p in model.parameters() if p.requires_grad]
+        optimizer = getattr(transformers, cfg.optimizer.name)(parameters, lr=lr, **cfg.optimizer.kwargs)
     else:
         raise NotImplementedError(f'invalid optimizer config: {cfg.optimizer}')
     return optimizer

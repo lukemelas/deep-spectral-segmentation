@@ -46,13 +46,20 @@ max_train_epochs: null
 gradient_accumulation_steps: 1
 
 optimizer:
-  kind: 'timm'
-  base_lr: 4e-6
+  kind: 'transformers'
+  absolute_lr: 0.005
+  name: 'Adafactor'
   kwargs:
-    optimizer_name: 'AdamW'
-    weight_decay: 0.00
-    betas: [0.9, 0.95]
-    filter_bias_and_bn: True
+      weight_decay: 0.0
+      scale_parameter: True
+      relative_step: False
+  # kind: 'timm'
+  # base_lr: 4e-6
+  # kwargs:
+  #   optimizer_name: 'AdamW'
+  #   weight_decay: 0.00
+  #   betas: [0.9, 0.95]
+  #   filter_bias_and_bn: True
 
 scheduler:
   kind: 'transformers'

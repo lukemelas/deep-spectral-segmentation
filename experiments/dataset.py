@@ -11,6 +11,12 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
 
+def albumentation_to_torchvision_transform(transform):
+    def _transform(image):
+        return transform(image=image)['image']
+    return _transform
+
+
 def get_transforms(cfg: DictConfig):
     crop_size, resize_size = cfg.data.transform.crop_size, cfg.data.transform.resize_size
     train_transform = A.Compose([

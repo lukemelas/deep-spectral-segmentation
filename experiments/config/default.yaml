@@ -1,7 +1,7 @@
 # @package _global_
 hydra:
   run:
-    dir: ./outputs/${name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ./outputs/${name}/${now:%Y-%m-%d--%H-%M-%S}
 
 name: "debug"
 seed: 1

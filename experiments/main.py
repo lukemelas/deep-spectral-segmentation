@@ -199,7 +199,7 @@ def train_one_epoch(
         accelerator.backward(loss)
 
         # Gradient accumulation, optimizer step, scheduler step
-        if train_state.step % cfg.gradient_accumulation_steps == 0:
+        if i % cfg.gradient_accumulation_steps == 0:
             optimizer.step()
             optimizer.zero_grad()
             torch.cuda.synchronize()

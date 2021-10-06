@@ -35,33 +35,42 @@ checkpoint:
   resume_training: True
   resume_model_from_ema: False
 
+# Exponential moving average of model parameters
 ema:
   enabled: True
   decay: 0.999  # 0.99996 for EfficientNet
   device: 'cpu'
   update_every: 100
 
+# Training steps/epochs
 max_train_steps: 100_000
 max_train_epochs: null
-gradient_accumulation_steps: 1
 
+# Optimization
+lr: 0.005
+gradient_accumulation_steps: 1
 optimizer:
+  scale_learning_rate_with_batch_size: False
+  clip_grad_norm: null
+
+  # Transformers optimizer
   kind: 'transformers'
-  absolute_lr: 0.005
   name: 'Adafactor'
   kwargs:
       weight_decay: 0.0
       scale_parameter: True
       relative_step: False
+
+  # # Timm optimizer
   # kind: 'timm'
-  # base_lr: 4e-6
   # kwargs:
   #   optimizer_name: 'AdamW'
-  #   weight_decay: 0.00
-  #   betas: [0.9, 0.95]
-  #   filter_bias_and_bn: True
+  #   weight_decay: 1e-8
 
+# Learning rate scheduling
 scheduler:
+
+  # Transformers scheduler
   kind: 'transformers'
   stepwise: True
   kwargs:
@@ -69,17 +78,17 @@ scheduler:
     num_warmup_steps: 0
     num_training_steps: ${max_train_steps}
 
-# scheduler:
-#   kind: 'timm'
-#   stepwise: False
-#   kwargs:
-#     epochs: ${epochs}
-#     sched: 'cosine'
-#     min_lr: 1e-5
-#     warmup_lr: 1e-6
-#     warmup_epochs: 5
-#     cooldown_epochs: 10
-#     decay_rate: 0.1
+  # # Timm scheduler
+  # kind: 'timm'
+  # stepwise: False
+  # kwargs:
+  #   epochs: ${epochs}
+  #   sched: 'cosine'
+  #   min_lr: 1e-5
+  #   warmup_lr: 1e-6
+  #   warmup_epochs: 5
+  #   cooldown_epochs: 10
+  #   decay_rate: 0.1
 
 logging:
   print_freq: 50

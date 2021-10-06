@@ -27,14 +27,13 @@ class TrainState:
 
 def get_optimizer(cfg: DictConfig, model: torch.nn.Module, accelerator: Accelerator) -> torch.optim.Optimizer:
     # Determine the learning rate
-    assert ('absolute_lr' in cfg.optimizer) ^ ('base_lr' in cfg.optimizer)
-    if 'absolute_lr' in cfg.optimizer:  # take this learning rate as fixed
-        lr = cfg.optimizer.absolute_lr
-        print('lr = {lr}'.format(lr=lr))
-    else:  # scale base learning rate by batch size
+    if cfg.optimizer.scale_learning_rate_with_batch_size:
         lr = accelerator.state.num_processes * cfg.data.loader.batch_size * cfg.optimizer.base_lr
-        print('lr = {ws} (num gpus) * {bs} (batch_size) * {blr} (base_lr) = {lr}'.format(
-            ws=accelerator.state.num_processes, bs=cfg.data.loader.batch_size, blr=cfg.optimizer.base_lr, lr=lr))
+        print('lr = {ws} (num gpus) * {bs} (batch_size) * {blr} (base learning rate) = {lr}'.format(
+            ws=accelerator.state.num_processes, bs=cfg.data.loader.batch_size, blr=cfg.lr, lr=lr))
+    else:  # scale base learning rate by batch size
+        lr = cfg.lr
+        print('lr = {lr} (absolute learning rate)'.format(lr=lr))
     # Construct optimizer
     if cfg.optimizer.kind == 'torch':
         parameters = [p for p in model.parameters() if p.requires_grad]

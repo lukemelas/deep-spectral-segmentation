@@ -1,0 +1,38 @@
+program: main.py
+project: misc
+method: grid
+metric:
+  goal: minimize
+  name: val_loss
+parameters:
+  lr:
+    values: [1e-5, 2e-5, 4e-5, 1e-4, 2e-4, 4e-4, 8e-4, 15e-4, 30e-4]
+  # NOTE: If you modify `max_train_steps` then you should probably also 
+  # modify scheduler.kwargs.num_training_steps
+  max_train_epochs:
+    value: 1
+  gradient_accumulation_steps:
+    value: 4
+  data.loader.batch_size:
+    value: 56
+  max_train_steps: 
+    value: 30000
+  model.kind:
+    value: "timm"
+  model.variant: 
+    value: "vit_base_patch16_224_in21k"
+  wandb:
+    value: True
+# early_terminate:
+#   type: hyperband
+#   s: 2
+#   eta: 3
+#   max_iter: 27  # this is the maximum 
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - ${args_no_hyphens}
+
+# For more config information, see:
+# https://docs.wandb.ai/guides/sweeps/configuration

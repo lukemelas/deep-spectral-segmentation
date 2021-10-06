@@ -44,6 +44,7 @@ Conference
  - Optional: 
  ```
  pip install timm wandb
+ pip install git+https://github.com/fadel/pytorch_ema
  ```
 
 #### Training

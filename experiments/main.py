@@ -2,6 +2,7 @@ import os
 import sys
 import math
 import datetime
+from contextlib import nullcontext
 from collections import namedtuple
 from pathlib import Path
 from typing import Callable, Iterable, Optional
@@ -44,9 +45,9 @@ def main(cfg: DictConfig):
     print(f'Parameters (train): {sum(p.numel() for p in model.parameters() if p.requires_grad):_d}')
 
     # Exponential moving average of model parameters
-    if cfg.ema.enabled:
-        from timm.utils import ModelEmaV2
-        model_ema = ModelEmaV2(model, decay=cfg.ema.decay, device=cfg.ema.device)
+    if cfg.ema.use_ema:
+        from torch_ema import ExponentialMovingAverage
+        model_ema = ExponentialMovingAverage(model.parameters(), decay=cfg.ema.decay)
         print('Initialized model EMA')
     else:
         model_ema = None
@@ -209,7 +210,7 @@ def train_one_epoch(
 
             # Model EMA
             if model_ema is not None and (train_state.epoch % cfg.ema.update_every) == 0:
-                model_ema.update(model)
+                model_ema.update()
 
         # Logging
         log_dict = dict(lr=optimizer.param_groups[0]["lr"], step=train_state.step,
@@ -238,29 +239,32 @@ def evaluate(
         model: torch.nn.Module,
         dataloader_val: Iterable,
         accelerator: Accelerator,
+        model_ema: Optional[object] = None,
         **_unused_kwargs):
 
     # Eval mode
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     progress_bar = metric_logger.log_every(dataloader_val, cfg.logging.print_freq, header="Val")
+    eval_context = model_ema.average_parameters if cfg.ema.use_ema else nullcontext
 
     # Evaluate
-    for i, (inputs, target) in enumerate(progress_bar):
-        if i >= cfg.get('limit_val_batches', math.inf):
-            break
+    with eval_context():
+        for i, (inputs, target) in enumerate(progress_bar):
+            if i >= cfg.get('limit_val_batches', math.inf):
+                break
 
-        # Forward
-        output = model(inputs)
-        loss = F.cross_entropy(output, target)
-        torch.cuda.synchronize()
+            # Forward
+            output = model(inputs)
+            loss = F.cross_entropy(output, target)
+            torch.cuda.synchronize()
 
-        # Measure accuracy
-        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            # Measure accuracy
+            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
 
-        # Logging
-        log_dict = dict(val_loss=loss.item(), top1=acc1[0], top5=acc5[0])
-        metric_logger.update(**log_dict, n=len(inputs))  # update with batch size
+            # Logging
+            log_dict = dict(val_loss=loss.item(), top1=acc1[0], top5=acc5[0])
+            metric_logger.update(**log_dict, n=len(inputs))  # update with batch size
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes(device=accelerator.device)

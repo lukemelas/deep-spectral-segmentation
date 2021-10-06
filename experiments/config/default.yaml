@@ -33,13 +33,12 @@ model:
 checkpoint:
   resume: null
   resume_training: True
-  resume_model_from_ema: False
+  resume_optimizer_only: False
 
 # Exponential moving average of model parameters
 ema:
-  enabled: True
+  use_ema: True
   decay: 0.999  # 0.99996 for EfficientNet
-  device: 'cpu'
   update_every: 100
 
 # Training steps/epochs

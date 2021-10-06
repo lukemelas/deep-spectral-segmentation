@@ -30,7 +30,8 @@ def main(cfg: DictConfig):
     # Logging
     utils.setup_distributed_print(accelerator.is_local_main_process)
     if cfg.wandb and accelerator.is_local_main_process:
-        wandb.init(project='template', name=cfg.name, job_type=cfg.job_type, config=cfg, save_code=True)
+        wandb.init(name=cfg.name, job_type=cfg.job_type, config=OmegaConf.to_container(cfg), save_code=True, **cfg.wandb_kwargs)
+        cfg = DictConfig(wandb.config.as_dict())  # get the config back from wandb for hyperparameter sweeps
 
     # Configuration
     print(OmegaConf.to_yaml(cfg))

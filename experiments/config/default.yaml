@@ -9,6 +9,8 @@ job_type: 'train'
 fp16: False
 cpu: False
 wandb: False
+wandb_kwargs:
+  project: template
 
 data:
   num_classes: 1000

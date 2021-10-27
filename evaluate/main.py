@@ -15,10 +15,12 @@ from contexttimer import Timer
 import hydra
 from omegaconf import OmegaConf, DictConfig
 import wandb
+import albumentations as A
+import albumentations.pytorch
+from torchvision.datasets import VOCSegmentation
 
 import utils
 from model import SimpleModel
-from dataset import SimpleDataset, get_transforms
 
 
 @hydra.main(config_path='config', config_name='default')
@@ -45,43 +47,26 @@ def main(cfg: DictConfig):
     print(f'Parameters (total): {sum(p.numel() for p in model.parameters()):_d}')
     print(f'Parameters (train): {sum(p.numel() for p in model.parameters() if p.requires_grad):_d}')
 
-    # Exponential moving average of model parameters
-    if cfg.ema.use_ema:
-        from torch_ema import ExponentialMovingAverage
-        model_ema = ExponentialMovingAverage(model.parameters(), decay=cfg.ema.decay)
-        print('Initialized model EMA')
-    else:
-        model_ema = None
-        print('Not using model EMA')
-
-    # Optimizer and scheduler
-    optimizer = utils.get_optimizer(cfg, model, accelerator)
-    scheduler = utils.get_scheduler(cfg, optimizer)
-
-    # Resume from checkpoint and create the initial training state
-    if cfg.checkpoint.resume:
-        train_state: utils.TrainState = utils.resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema)
-    else:
-        train_state = utils.TrainState()  # start training from scratch
-
     # Transforms
-    train_transform, val_transform = get_transforms(cfg)
+    crop_size, resize_size = cfg.data.transform.crop_size, cfg.data.transform.resize_size
+    train_transform = val_transform = utils.albumentations_to_torch(transform=A.Compose([
+        A.Resize(resize_size, resize_size), A.CenterCrop(crop_size, crop_size),
+        A.ToTensor(), A.Normalize(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std)
+    ]))
 
-    with Timer(prefix="Loading data..."):
-        dataset_train = SimpleDataset(root=cfg.data.train.root, transform=train_transform)
-        dataset_val = SimpleDataset(root=cfg.data.val.root, transform=val_transform)
-        dataset_vis = SimpleDataset(root=cfg.data.val.root, transform=val_transform)
-        # # Optionally, shuffle the visualization dataset with:
-        # indices = np.random.default_rng(seed=cfg.seed).permutation(len(dataset_val))
-        # dataset_vis = Subset(dataset_vis, indices=indices)
-        dataloader_train = DataLoader(dataset_train, shuffle=True, drop_last=True, **cfg.data.loader)
-        dataloader_val = DataLoader(dataset_val, shuffle=False, drop_last=False, **cfg.data.loader)
-        dataloader_vis = DataLoader(dataset_vis, shuffle=False, drop_last=False, **{**cfg.data.loader, 'batch_size': 16})
-        total_batch_size = cfg.data.loader.batch_size * accelerator.num_processes * cfg.gradient_accumulation_steps
+    # Datasets
+    dataset_train = VOCSegmentation(**cfg.data.train_kwargs, transform=train_transform)
+    dataset_val = VOCSegmentation(**cfg.data.val_kwargs, transform=val_transform)
+    dataset_vis = VOCSegmentation(**cfg.data.val_kwargs, transform=val_transform)
+    
+    # Dataloaders
+    dataloader_train = DataLoader(dataset_train, shuffle=True, drop_last=True, **cfg.data.loader)
+    dataloader_val = DataLoader(dataset_val, shuffle=False, drop_last=False, **cfg.data.loader)
+    dataloader_vis = DataLoader(dataset_vis, shuffle=False, drop_last=False, **{**cfg.data.loader, 'batch_size': 16})
+    total_batch_size = cfg.data.loader.batch_size * accelerator.num_processes * cfg.gradient_accumulation_steps
 
     # Setup
-    model, optimizer, dataloader_train, dataloader_val = accelerator.prepare(
-        model, optimizer, dataloader_train, dataloader_val)
+    model, dataloader_train, dataloader_val = accelerator.prepare(model, dataloader_train, dataloader_val)
 
     # Shared training, evaluation, and visualization args
     kwargs = dict(
@@ -90,16 +75,7 @@ def main(cfg: DictConfig):
         dataloader_train=dataloader_train,
         dataloader_val=dataloader_val,
         dataloader_vis=dataloader_vis,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        accelerator=accelerator,
-        model_ema=model_ema,
-        train_state=train_state)
-
-    # Evaluation
-    if cfg.job_type == 'eval':
-        test_stats = evaluate(**kwargs)
-        return test_stats['val_loss']
+        accelerator=accelerator)
 
     # Info
     print(f'***** Starting training at {datetime.datetime.now()} *****')
@@ -108,81 +84,41 @@ def main(cfg: DictConfig):
     print(f'    Dataloader train size: {len(dataloader_train):_}')
     print(f'    Dataloader val size: {len(dataloader_val):_}')
     print(f'    Batch size per device = {cfg.data.loader.batch_size}')
-    print(f'    Total train batch size (w. parallel, dist & accum) = {total_batch_size}')
-    print(f'    Gradient Accumulation steps = {cfg.gradient_accumulation_steps}')
-    print(f'    Max optimization steps = {cfg.max_train_steps}')
-    print(f'    Max optimization epochs = {cfg.max_train_epochs}')
-    print(f'    Training state = {train_state}')
 
-    # Training loop
-    while True:
+    # Multiple trials
+    for _ in range(cfg.num_trials):
 
-        # Visualize (before training)
-        visualize(**kwargs, num_batches=1, identifier=f'e-{train_state.epoch}')
-
-        # Single epoch of training
-        train_state = train_one_epoch(**kwargs)
-
-        # Save checkpoint on only 1 process
-        if accelerator.is_local_main_process:
-            print('Saving checkpoint...')
-            checkpoint_dict = {
-                'model': accelerator.unwrap_model(model).state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-                'epoch': train_state.epoch,
-                'steps': train_state.step,
-                'best_val': train_state.best_val,
-                'model_ema': model_ema.state_dict() if model_ema else {},
-                'cfg': cfg
-            }
-            accelerator.save(checkpoint_dict, 'checkpoint-latest.pth')
-
-        # Evaluate
-        if (train_state.epoch < 5) or (train_state.epoch) % 1 == 0:
-            test_stats = evaluate(**kwargs)
-            if accelerator.is_local_main_process:
-                if (train_state.best_val is None) or (test_stats['val_loss'] < train_state.best_val):
-                    train_state.best_val = test_stats['val_loss']
-                    torch.save(checkpoint_dict, 'checkpoint-best.pth')
-                if cfg.wandb:
-                    wandb.log(test_stats)
-                    wandb.run.summary["best_val_loss"] = train_state.best_val
+        # Load or compute dense embeddings
+        if cfg.embeddings is not None:
+            compute_and_save_dense_embeddings(**kwargs)
         
-        # End training
-        if ((cfg.max_train_steps is not None and train_state.step >= cfg.max_train_steps) or 
-            (cfg.max_train_epochs is not None and train_state.epoch >= cfg.max_train_epochs)):
-            print(f'Ending training at: {datetime.datetime.now()}')
-            print(f'Final train state: {train_state}')
-            sys.exit()
+        # Cluster with K-Means
+        clusters = kmeans(**kwargs)
         
+        # # Evaluate
+        # eval_stats = kmeans(**kwargs)
+        # print(eval_stats)
 
-def train_one_epoch(
+        # # Visualize (before training)
+        # visualize(**kwargs, num_batches=1, identifier=f'e-{train_state.epoch}')
+
+
+def compute_and_save_dense_embeddings(
         *,
         cfg: DictConfig,
         model: torch.nn.Module,
         dataloader_train: Iterable,
-        optimizer: torch.optim.Optimizer,
         accelerator: Accelerator,
-        scheduler: Callable,
-        train_state: utils.TrainState,
-        model_ema: Optional[object] = None,
         **_unused_kwargs):
 
-    # Train mode
-    model.train()
-    log_header = f'Epoch: [{train_state.epoch}]'
+    # Eval mode
+    model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('step', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.0f}'))
-    progress_bar = metric_logger.log_every(dataloader_train, cfg.logging.print_freq, header=log_header)
+    progress_bar = metric_logger.log_every(dataloader_train, cfg.logging.print_freq, header='Computing embeddings:')
 
     # Train
     for i, (inputs, target) in enumerate(progress_bar):
-        if i >= cfg.get('limit_train_batches', math.inf):
-            break
-
-        print(i, train_state.step)
+        if i >= cfg.get('limit_train_batches', math.inf): break
 
         # Forward
         output = model(inputs)
@@ -234,7 +170,7 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(
+def kmeans(
         *,
         cfg: DictConfig,
         model: torch.nn.Module,
@@ -282,6 +218,8 @@ def visualize(
         identifier: str = '',
         num_batches: Optional[int] = None,
         **_unused_kwargs):
+
+    raise NotImplementedError()
 
     # Eval mode
     model.eval()

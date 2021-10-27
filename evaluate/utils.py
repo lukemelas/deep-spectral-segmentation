@@ -17,7 +17,6 @@ from accelerate import Accelerator
 from omegaconf import DictConfig
 
 
-
 @dataclass
 class TrainState:
     epoch: int = 0
@@ -347,3 +346,10 @@ def tensor_to_pil(image: torch.Tensor):
     image = (image.float() * 0.5 + 0.5).clamp(0, 1).detach().cpu().requires_grad_(False)
     ndarr = image.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
     return Image.fromarray(ndarr)
+
+
+def albumentations_to_torch(transform):
+    def _transform(img, target):
+        augmented = transform(image=img, mask=target)
+        return augmented['image'], augmented['mask']
+    return _transform

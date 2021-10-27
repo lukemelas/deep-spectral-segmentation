@@ -1,0 +1,51 @@
+# @package _global_
+hydra:
+  run:
+    dir: ./outputs/${name}/${now:%Y-%m-%d--%H-%M-%S}
+
+name: "debug"
+seed: 1
+job_type: 'train'
+fp16: False
+cpu: False
+wandb: False
+wandb_kwargs:
+  project: found
+
+data:
+  num_classes: 20
+  dataset: pascal
+  train_kwargs:
+    root: /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2007
+    year: 2007
+    image_set: train
+    download: False
+  val_kwargs:
+    root: /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2007
+    year: 2007
+    image_set: val
+    download: False
+  loader:
+    batch_size: 16
+    num_workers: 8
+    pin_memory: False
+  transform:
+    resize_size: 256
+    crop_size: 224
+    img_mean: [0.485, 0.456, 0.406]
+    img_std: [0.229, 0.224, 0.225]
+
+num_trials: 1
+embeddings: null
+
+model:
+  num_classes: ${data.num_classes}
+  pretrained: False
+
+checkpoint:
+  resume: null
+  resume_training: True
+  resume_optimizer_only: False
+
+logging:
+  print_freq: 50

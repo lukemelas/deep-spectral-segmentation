@@ -4,6 +4,13 @@ wandb
 outputs
 tmp*
 slurm-logs
+preprocess/extract-features/features
+preprocess/extract-features/eigensegments
+preprocess/extract-features/features_VOC2012
+preprocess/extract-features/eigensegments
+preprocess/extract-features/object_eigensegments
+preprocess/extract-features/object_eigensegments_VOC2012
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

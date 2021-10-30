@@ -1,7 +1,7 @@
 """An experimental script to create eigensegments"""
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from functools import partial
@@ -15,6 +15,9 @@ import fire
 from collections import defaultdict, namedtuple
 import denseCRF
 from scipy.sparse.linalg import eigsh
+from skimage.morphology import binary_erosion, binary_dilation
+from skimage.transform import resize
+
 
 
 # Inverse transform
@@ -40,6 +43,24 @@ def get_largest_cc(mask: np.array):
     largest_cc_index = np.argmax(np.bincount(labels.flat)[1:]) + 1
     largest_cc_mask = (labels == largest_cc_index)
     return largest_cc_mask
+
+
+def erode_or_dilate_mask(x: Union[torch.Tensor, np.ndarray], r: int = 0, erode=True):
+    fn = binary_erosion if erode else binary_dilation
+    for _ in range(r):
+        x = fn(x)
+    return x
+
+
+def trimap_from_mask(mask, r=15):
+    is_fg = erode_or_dilate_mask(mask, r=r, erode=True)
+    is_bg = ~(erode_or_dilate_mask(mask, r=r, erode=False))
+    if is_fg.sum() == 0:
+        is_fg = erode_or_dilate_mask(mask, r=1, erode=True)
+    trimap = np.full_like(mask, fill_value=0.5, dtype=float)
+    trimap[is_fg] = 1.0
+    trimap[is_bg] = 0.0
+    return trimap
 
 
 def _create_object_segment(
@@ -205,40 +226,130 @@ def combine_segments(
     # Save
     torch.save(combined_output_dict, output_file)
     print(f'Saved file to {output_file}')
-    
+
 
 def vis_segments(
-    input_file: str = './VOC2007-dino_vits16-processed.pth',
+    features_root: str = './features_VOC2012',
+    segments_root: str = './eigensegments_VOC2012',
 ):
     """
     Example:
     streamlit run extract-segments.py vis_segments -- \
-            --input_file ./VOC2007-dino_vits16-processed.pth
+        --features_root ./features_VOC2012 \
+        --segments_root ./eigensegments_VOC2012 \
     """
     # Streamlit setup
     import streamlit as st
     st.set_page_config(layout='wide')
 
     # Load
-    data_dict = torch.load(input_file, map_location='cpu')
-    for k in data_dict:
-        st.write(k, len(data_dict[k]), type(data_dict[k][0]))
+    feature_files = sorted(Path(features_root).iterdir())
+    segment_files = sorted(Path(segments_root).iterdir())
+    assert len(feature_files) == len(segment_files)
 
-    # Display
-    column = 'object_eigensegments'  # 'eigensegments'
-    for i in range(20):
-        img = data_dict['images_resized'][i]
-        seg = data_dict[column][i].numpy() * 255
+    # Combine
+    for i, (ff, fs) in enumerate(tqdm(list(zip(feature_files, segment_files)))):
+        if i > 20: break
+
+        # Combine
+        features_dict = torch.load(ff, map_location='cpu')
+        segments_dict = torch.load(fs, map_location='cpu')
+        data_dict = defaultdict(list)
+        for k, v in features_dict.items():
+            data_dict[k] = v[0] if (isinstance(v, list) and len(v) == 1) else v
+        for k, v in segments_dict.items():
+            data_dict[k] = v[0] if (isinstance(v, list) and len(v) == 1) else v
+        data_dict = dict(data_dict)
+
+        # Print stuff
+        if i == 0:
+            for k, v in data_dict.items():
+                st.write(k, type(v), v.shape if torch.is_tensor(v) else (v if isinstance(v, str) else None))
+
+        # Display stuff
+        img = data_dict['images_resized']
         image = _inverse_transform(img.squeeze(0))
-        cols = st.columns(6)
-        cols[0].image(image)
-        for j in range(5):
-            cols[j + 1].image(seg[j])
+        eig_seg = data_dict['eigensegments'].numpy() * 255
+        obj_seg = data_dict['eigensegments_object'].numpy() * 255
+        cols = st.columns(1 + 3 + 3)
+        cols[0].image(image, caption=f'{data_dict["files"][0]} ({i})')
+        cols[1].image(obj_seg[0], caption='obj seg 0')
+        cols[2].image(obj_seg[1], caption='obj seg 1')
+        cols[3].image(obj_seg[2], caption='obj seg 2')
+        cols[4].image(eig_seg[0], caption='eig seg 0')
+        cols[5].image(eig_seg[1], caption='eig seg 1')
+        cols[6].image(eig_seg[2], caption='eig seg 2')
+
+
+def _create_object_matte(inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16):
+    from pymatting import estimate_alpha_cf, stack_images
+
+    # Load 
+    index, (feature_path, segment_path) = inp
+    index, path = inp
+    data_dict = torch.load(feature_path, map_location='cpu')
+    data_dict.update(torch.load(segment_path, map_location='cpu'))
+
+    # Sizes
+    image = _inverse_transform(data_dict['images_resized'].squeeze(0))
+    img_np = np.array(image) / 255
+    H, W = img_np.shape[:2]
+    H_, W_ = (H // patch_size, W // patch_size)
+
+    # Eigenvector
+    eigenvector = data_dict['eigenvectors'][0].reshape(H_,W_)
+    eigenvector = resize(eigenvector, output_shape=(H, W))  # upscale
+    object_segment = (eigenvector > 0).astype(float)
+    if 0.5 < np.mean(object_segment).item() < 1.0:  # reverse segment
+        object_segment = (1 - object_segment)
+    object_segment = get_largest_cc(object_segment)
+    trimap = trimap_from_mask(object_segment, r=r)
+    alpha = estimate_alpha_cf(img_np, trimap)
+    rgba = stack_images(img_np, alpha)
+
+    # Save dict
+    output_file = str(Path(output_dir) / f'{prefix}-matte-{index:05d}.pth')
+    torch.save(rgba, output_file)
+
+
+@torch.no_grad()
+def create_object_mattes(
+    prefix: str,
+    features_root: str = './features_VOC2012',
+    segments_root: str = './eigensegments_VOC2012',
+    output_dir: str = './mattes_VOC2012',
+    r: int = 15,
+    multiprocessing: int = 0
+):
+    """
+    Example:
+    python extract-segments.py create_object_mattes \
+        --prefix VOC2012-dino_vits16 \
+        --features_root ./features_VOC2012 \
+        --segments_root ./eigensegments_VOC2012 \
+        --output_dir ./mattes_VOC2012 \
+    """
+    start = time.time()
+    _create_object_segment_fn = partial(_create_object_matte, r=r, prefix=prefix, output_dir=output_dir)
+    inputs = list(enumerate(zip(
+        sorted(Path(features_root).iterdir()),
+        sorted(Path(segments_root).iterdir()),
+    )))  # inputs are (index, (feature_file, segment_file)) tuples
+    if multiprocessing:
+        from multiprocessing import Pool
+        with Pool(multiprocessing) as pool:
+            list(tqdm(pool.imap(_create_object_segment_fn, inputs), total=len(inputs)))
+    else:
+        for inp in tqdm(inputs):
+            _create_object_segment_fn(inp)
+    print(f'Done in {time.time() - start:.1f}s')
+
 
 
 if __name__ == '__main__':
     fire.Fire(dict(
         create_segments=create_segments, 
         combine_segments=combine_segments, 
-        vis_segments=vis_segments
+        create_object_mattes=create_object_mattes,
+        vis_segments=vis_segments,
     ))

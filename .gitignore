@@ -4,12 +4,9 @@ wandb
 outputs
 tmp*
 slurm-logs
-preprocess/extract-features/features
-preprocess/extract-features/eigensegments
-preprocess/extract-features/features_VOC2012
-preprocess/extract-features/eigensegments
-preprocess/extract-features/object_eigensegments
-preprocess/extract-features/object_eigensegments_VOC2012
+preprocess/extract-features/features_*
+preprocess/extract-features/eigensegments_*
+preprocess/extract-features/mattes_*
 
 
 # Byte-compiled / optimized / DLL files
@@ -141,3 +138,4 @@ venv.bak/
 lightning_logs/
 MNIST
 .DS_Store
+preprocess/extract-features/eigensegments_VOC2012

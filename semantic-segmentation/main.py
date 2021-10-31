@@ -7,6 +7,7 @@ from collections import namedtuple
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 from PIL import Image
+import numpy as np
 import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -20,6 +21,8 @@ import albumentations.pytorch
 import cv2
 from tqdm import tqdm
 from sklearn.cluster import PCA, MiniBatchKMeans
+from skimage.color import label2rgb
+from matplotlib.cm import get_cmap
 
 
 import utils
@@ -46,53 +49,34 @@ def main(cfg: DictConfig):
     # Set random seed
     utils.set_seed(cfg.seed)
 
-    # Dataset
-    if cfg.use_embeddings:
-        # Compute embeddings and save to './embeddings'
-        if cfg.embedings_dir is None:
-            compute_and_save_dense_embeddings(cfg=cfg, accelerator=accelerator)
-        # Create dataset with embeddings
-        dataset_val = VOCSegmentationWithPseudolabels(
-            **cfg.data.val_kwargs, 
-            transform=None,  # no transform to evaluate at original resolution
-            segments_dir=cfg.get('segments_dir', './segments'),
-            features_dir=cfg.get('features_dir', './features'),
-        )
-    elif cfg.use_segments:
-        # Create dataset with segments
-        dataset_val = VOCSegmentationWithPseudolabels(
-            **cfg.data.val_kwargs, 
-            transform=None,  # no transform to evaluate at original resolution
-            segments_dir=cfg.segments_dir,
-            features_dir=cfg.features_dir,
-        )
-    else:
-        raise NotImplementedError()
+    # Create dataset with segments/pseudolabels
+    dataset_val = VOCSegmentationWithPseudolabels(
+        **cfg.data.val_kwargs, 
+        transform=None,  # no transform to evaluate at original resolution
+        segments_dir=cfg.segments_dir,
+        features_dir=cfg.features_dir,
+    )
 
     # Dataloaders
     dataloader_val = DataLoader(dataset_val, shuffle=False, drop_last=False, **cfg.data.loader)
-    dataloader_vis = DataLoader(dataset_val, shuffle=False, drop_last=False, **cfg.data.loader)
     
     # Multiple trials
     for i in range(cfg.kmeans.num_trials):
 
         # Cluster with K-Means
-        clusters = kmeans(cfg, dataloader_val, accelerator, seed=(cfg.seed + i))
-        
-        # # Evaluate
-        # eval_stats = kmeans(**kwargs)
-        # print(eval_stats)
+        preds = kmeans(cfg=cfg, dataloader_val=dataloader_val, seed=(cfg.seed + i))
 
-        # # Visualize
-        # visualize(**kwargs, num_batches=1, identifier=f'e-{train_state.epoch}')
+        # Evaluate
+        eval_stats = kmeans(cfg=cfg, dataloader_val=dataloader_val, preds=preds)
+        print(eval_stats)
+
 
 
 def compute_and_save_dense_embeddings(
-    *,
-    cfg: DictConfig,
-    accelerator: Accelerator, 
-    val_transform: Callable
-):
+        *,
+        cfg: DictConfig,
+        accelerator: Accelerator, 
+        val_transform: Callable):
 
     # Create model
     model = get_model(**cfg.model)
@@ -136,11 +120,11 @@ def compute_and_save_dense_embeddings(
     progress_bar = metric_logger.log_every(dataloader_val, cfg.logging.print_freq, header='Computing embeddings')
 
     # Train
-    for i, (inputs, target) in enumerate(progress_bar):
+    for i, (image, target) in enumerate(progress_bar):
         if i >= cfg.get('limit_train_batches', math.inf): break
 
         # Forward
-        output = model(inputs)
+        output = model(image)
 
         # Save embeddings...
 
@@ -153,34 +137,12 @@ def kmeans(
         *,
         cfg: DictConfig,
         dataloader_val: Iterable,
-        accelerator: Accelerator,
         seed: int,
         **_unused_kwargs):
 
-    # # perform kmeans
-    # all_prototypes = all_prototypes.cpu().numpy()
-    # all_sals = all_sals.cpu().numpy()
-    # n_clusters = n_clusters - 1
-    # print('Kmeans clustering to {} clusters'.format(n_clusters))
-
-    # print(colored('Starting kmeans with scikit', 'green'))
-    # pca = PCA(n_components=32, whiten=True)
-    # all_prototypes = pca.fit_transform(all_prototypes)
-    # kmeans = MiniBatchKMeans(n_clusters=n_clusters, batch_size=1000, random_state=seed)
-    # prediction_kmeans = kmeans.fit_predict(all_prototypes)
-
-    # # save predictions
-    # for i, fname, pred in zip(range(len(val_loader.sampler)), names, prediction_kmeans):
-    #     prediction = all_sals[i].copy()
-    #     prediction[prediction == 1] = pred + 1
-    #     np.save(os.path.join(p['embedding_dir'], fname + '.npy'), prediction)
-    #     if i % 300 == 0:
-    #         print('Saving results: {} of {} objects'.format(i, len(val_loader.dataset)))
-
-
     # Stack all embeddings
     all_features = []
-    for i, (inputs, target, embeddings, features) in tqdm(dataloader_val):
+    for i, (image, target, mask, features, metadata) in tqdm(dataloader_val, desc='Stacking features'):
         all_features.append(features)
     all_features = torch.stack(features, dim=0).numpy()
 
@@ -192,58 +154,41 @@ def kmeans(
     # Perform kmeans
     n_clusters = cfg.data.num_classes
     kmeans = MiniBatchKMeans(n_clusters=n_clusters, batch_size=1000, random_state=seed)
-    prediction_kmeans = kmeans.fit_predict(all_features)
-
-
-
-
-    # Predict clusters
-
-
+    preds = kmeans.fit_predict(all_features)    
+    return preds
         
 
 @torch.no_grad()
 def visualize(
         *,
         cfg: DictConfig,
-        model: torch.nn.Module,
-        dataloader_vis: Iterable,
-        accelerator: Accelerator,
-        identifier: str = '',
-        num_batches: Optional[int] = None,
-        **_unused_kwargs):
-
-    raise NotImplementedError()
-
-    # Eval mode
-    model.eval()
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    progress_bar = metric_logger.log_every(dataloader_vis, cfg.logging.print_freq, "Vis")
+        preds: Iterable,
+        dataloader_val: Iterable):
 
     # Visualize
-    for batch_idx, (inputs, target) in enumerate(progress_bar):
-        if num_batches is not None and batch_idx >= num_batches:
+    num_vis = 25
+    vis_dir = Path('./vis')
+    colors = get_cmap('Set3', 20).colors[:,:3]
+    pbar = tqdm(zip(preds, dataloader_val), total=num_vis)
+    for i, (pred_cluster, (image, target, mask, features, metadata)) in pbar:
+        if i >= num_vis:
             break
-
-        # Inverse normalization
-        Inv = utils.NormalizeInverse(mean=cfg.data.transform.img_mean, std=cfg.data.transform.img_std)
-        image = Inv(inputs).clamp(0, 1)
-        vis_dict = dict(image=image)
-
-        # Save images
-        wandb_log_dict = {}
-        for name, images in vis_dict.items():
-            for i, image in enumerate(images):
-                pil_image = utils.tensor_to_pil(image)
-                filename = f'vis/{name}/p-{accelerator.process_index}-b-{batch_idx}-img-{i}-{name}-{identifier}.png'
-                Path(filename).parent.mkdir(exist_ok=True, parents=True)
-                pil_image.save(filename)
-                if i < 2:  # log to Weights and Biases
-                    wandb_filename = f'vis/{name}/p-{accelerator.process_index}-b-{batch_idx}-img-{i}-{name}'
-                    wandb_log_dict[wandb_filename] = [wandb.Image(pil_image)]
-        if cfg.wandb and accelerator.is_local_main_process:
-            wandb.log(wandb_log_dict, commit=False)
-    print(f'Saved visualizations to {Path("vis").absolute()}')
+        image = np.array(image)
+        target = np.array(target)
+        # Color the mask
+        mask[mask == 1] = pred_cluster
+        # Overlay mask on image
+        image_pred_overlay = label2rgb(label=mask, image=image, colors=colors)
+        image_target_overlay = label2rgb(label=target, image=image, colors=colors)
+        # Save
+        image_id = metadata["id"]
+        path_pred = vis_dir / 'pred' / f'{image_id}-pred.png'
+        path_target = vis_dir / 'target' / f'{image_id}-target.png'
+        path_pred.parent.mkdir(exist_ok=True, parents=True)
+        path_target.parent.mkdir(exist_ok=True, parents=True)
+        Image.fromarray(image_pred_overlay).save(str(path_pred))
+        Image.fromarray(image_target_overlay).save(str(path_target))
+        print(f'Saved visualizations to {Path("vis").absolute()}')
 
 
 if __name__ == '__main__':

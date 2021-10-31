@@ -4,6 +4,14 @@ import torch.nn.functional as F
 from torchvision import models
 
 
+def get_model():
+    model = torch.hub.load('facebookresearch/dino:main', 'dino_resnet50')
+    model.avgpool = nn.Identity()
+    model.fc = nn.Identity()
+    model = model.eval().cuda()
+    return model
+
+
 class SimpleModel(nn.Module):
     def __init__(self, num_classes=1000, pretrained=False):
         super().__init__()

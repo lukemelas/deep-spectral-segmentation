@@ -15,11 +15,11 @@ wandb_kwargs:
 data:
   num_classes: 20
   dataset: pascal
-  train_kwargs:
-    root: /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2007
-    year: 2007
-    image_set: train
-    download: False
+  # train_kwargs:
+  #   root: /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2007
+  #   year: 2007
+  #   image_set: train
+  #   download: False
   val_kwargs:
     root: /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2007
     year: 2007
@@ -35,12 +35,14 @@ data:
     img_mean: [0.485, 0.456, 0.406]
     img_std: [0.229, 0.224, 0.225]
 
-num_trials: 1
-embeddings: null
+kmeans:
+  num_trials: 1
+  pca_dim: null
 
-model:
-  num_classes: ${data.num_classes}
-  pretrained: False
+# How to create masks
+segments_dir: null
+
+model: {}
 
 checkpoint:
   resume: null

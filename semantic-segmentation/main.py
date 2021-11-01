@@ -20,12 +20,13 @@ import albumentations as A
 import albumentations.pytorch
 import cv2
 from tqdm import tqdm
-from sklearn.cluster import PCA, MiniBatchKMeans
+from sklearn.decomposition import PCA
+from sklearn.cluster import MiniBatchKMeans
 from skimage.color import label2rgb
 from matplotlib.cm import get_cmap
 
-
 import utils
+import eval_utils
 from datasets.voc import VOCSegmentation, VOCSegmentationWithPseudolabels
 from model import get_model
 
@@ -52,22 +53,22 @@ def main(cfg: DictConfig):
     # Create dataset with segments/pseudolabels
     dataset_val = VOCSegmentationWithPseudolabels(
         **cfg.data.val_kwargs, 
-        transform=None,  # no transform to evaluate at original resolution
         segments_dir=cfg.segments_dir,
-        features_dir=cfg.features_dir,
+        transform=None,  # no transform to evaluate at original resolution
     )
-
-    # Dataloaders
-    dataloader_val = DataLoader(dataset_val, shuffle=False, drop_last=False, **cfg.data.loader)
     
     # Multiple trials
     for i in range(cfg.kmeans.num_trials):
+        print(f'Starting run {i + 1} of {cfg.kmeans.num_trials}')
 
         # Cluster with K-Means
-        preds = kmeans(cfg=cfg, dataloader_val=dataloader_val, seed=(cfg.seed + i))
+        preds = kmeans(cfg=cfg, dataset_val=dataset_val, seed=(cfg.seed + i))
+        
+        # Visualize
+        visualize(cfg=cfg, dataset_val=dataset_val, preds=preds)
 
         # Evaluate
-        eval_stats = kmeans(cfg=cfg, dataloader_val=dataloader_val, preds=preds)
+        eval_stats = evaluate(cfg=cfg, dataset_val=dataset_val, preds=preds)
         print(eval_stats)
 
 
@@ -131,24 +132,20 @@ def compute_and_save_dense_embeddings(
         raise NotImplementedError()
         
 
-
-@torch.no_grad()
 def kmeans(
         *,
         cfg: DictConfig,
-        dataloader_val: Iterable,
+        dataset_val: Iterable,
         seed: int,
         **_unused_kwargs):
 
     # Stack all embeddings
-    all_features = []
-    for i, (image, target, mask, features, metadata) in tqdm(dataloader_val, desc='Stacking features'):
-        all_features.append(features)
-    all_features = torch.stack(features, dim=0).numpy()
+    pbar = tqdm(dataset_val, desc='Stacking features')
+    all_features = torch.stack([features for (image, target, mask, features, metadata) in pbar], dim=0).numpy()
 
     # Perform PCA
-    if cfg.kmeans.pca_dim is not None:
-        pca = PCA(n_components=32, whiten=True)
+    if cfg.kmeans.pca_dim:
+        pca = PCA(n_components=cfg.kmeans.pca_dim, whiten=True)
         all_features = pca.fit_transform(all_features)
 
     # Perform kmeans
@@ -158,38 +155,121 @@ def kmeans(
     return preds
         
 
-@torch.no_grad()
 def visualize(
         *,
         cfg: DictConfig,
-        preds: Iterable,
-        dataloader_val: Iterable):
+        dataset_val: Iterable,
+        preds: Iterable):
 
     # Visualize
-    num_vis = 25
+    num_vis = 40
     vis_dir = Path('./vis')
-    colors = get_cmap('Set3', 20).colors[:,:3]
-    pbar = tqdm(zip(preds, dataloader_val), total=num_vis)
-    for i, (pred_cluster, (image, target, mask, features, metadata)) in pbar:
+    colors = get_cmap('tab10', cfg.data.num_classes + 1).colors[:,:3]
+    pbar = tqdm(zip(preds, dataset_val), total=num_vis, desc='Saving visualizations: ')
+    for i, (pred_cluster, (image, target, mask, features, metadata)) in enumerate(pbar):
         if i >= num_vis:
             break
         image = np.array(image)
         target = np.array(target)
+        target[target == 255] = 0  # set the "unknown" regions to background for visualization
         # Color the mask
         mask[mask == 1] = pred_cluster
         # Overlay mask on image
-        image_pred_overlay = label2rgb(label=mask, image=image, colors=colors)
-        image_target_overlay = label2rgb(label=target, image=image, colors=colors)
+        image_pred_overlay = label2rgb(label=mask, image=image, colors=colors[np.unique(target)[1:]], bg_label=0, alpha=0.45)
+        image_target_overlay = label2rgb(label=target, image=image, colors=colors[np.unique(target)[1:]], bg_label=0, alpha=0.45)
         # Save
         image_id = metadata["id"]
         path_pred = vis_dir / 'pred' / f'{image_id}-pred.png'
         path_target = vis_dir / 'target' / f'{image_id}-target.png'
         path_pred.parent.mkdir(exist_ok=True, parents=True)
         path_target.parent.mkdir(exist_ok=True, parents=True)
-        Image.fromarray(image_pred_overlay).save(str(path_pred))
-        Image.fromarray(image_target_overlay).save(str(path_target))
-        print(f'Saved visualizations to {Path("vis").absolute()}')
+        Image.fromarray((image_pred_overlay * 255).astype(np.uint8)).save(str(path_pred))
+        Image.fromarray((image_target_overlay * 255).astype(np.uint8)).save(str(path_target))
+    print(f'Saved visualizations to {vis_dir.absolute()}')
+
+
+def evaluate(
+        *,
+        cfg: DictConfig,
+        dataset_val: Iterable,
+        preds: Iterable,
+        n_clusters: Optional[int] = None):
+
+    # Add background class
+    n_classes = cfg.data.num_classes + 1
+    if n_clusters is None:
+        n_clusters = n_classes
+
+    # Iterate
+    tp = [0] * n_classes
+    fp = [0] * n_classes
+    fn = [0] * n_classes
+
+    # Load all pixel embeddings
+    all_preds = np.zeros((len(dataset_val) * 500 * 500), dtype=np.float32)
+    all_gt = np.zeros((len(dataset_val) * 500 * 500), dtype=np.float32)
+    offset_ = 0
+
+    # Add all pixels to our arrays
+    pbar = tqdm(zip(preds, dataset_val), desc='Concatenating all predictions')
+    for (pred_cluster, (image, target, mask, features, metadata)) in pbar:
+        target = np.array(target)
+        # Assign the cluster to the mask
+        mask[mask == 1] = pred_cluster
+        # Check where ground-truth is valid and append valid pixels to the array
+        valid = (target != 255)
+        n_valid = np.sum(valid)
+        all_gt[offset_:offset_+n_valid] = target[valid]
+        # Possibly reshape embedding to match gt.
+        if mask.shape != target.shape:
+            raise ValueError(f'{mask.shape=} != {target.shape=}')
+            # mask = cv2.resize(embedding, target.shape[::-1], interpolation=cv2.INTER_NEAREST)
+        # Append the predicted targets in the array
+        all_preds[offset_:offset_+n_valid, ] = mask[valid]
+        all_gt[offset_:offset_+n_valid, ] = target[valid]
+        # Update offset_
+        offset_ += n_valid
+
+    # Truncate to the actual number of pixels
+    all_preds = all_preds[:offset_, ]
+    all_gt = all_gt[:offset_, ]
+
+    # Do hungarian matching
+    num_elems = offset_
+    if n_clusters == n_classes:
+        print('Using hungarian algorithm for matching')
+        match = eval_utils.hungarian_match(all_preds, all_gt, preds_k=n_clusters, targets_k=n_classes, metric='iou')
+    else:
+        print('Using majority voting for matching')
+        match = eval_utils.majority_vote(all_preds, all_gt, preds_k=n_clusters, targets_k=n_classes)
+
+    # Remap predictions
+    reordered_preds = np.zeros(num_elems, dtype=all_preds.dtype)
+    for pred_i, target_i in match:
+        reordered_preds[all_preds == int(pred_i)] = int(target_i)
+
+    # TP, FP, and FN evaluation
+    for i_part in range(0, n_classes):
+        tmp_all_gt = (all_gt == i_part)
+        tmp_pred = (reordered_preds == i_part)
+        tp[i_part] += np.sum(tmp_all_gt & tmp_pred)
+        fp[i_part] += np.sum(~tmp_all_gt & tmp_pred)
+        fn[i_part] += np.sum(tmp_all_gt & ~tmp_pred)
+
+    # Calculate Jaccard index
+    jac = [0] * n_classes
+    for i_part in range(0, n_classes):
+        jac[i_part] = float(tp[i_part]) / max(float(tp[i_part] + fp[i_part] + fn[i_part]), 1e-8)
+
+    # Print results
+    eval_result = dict()
+    eval_result['jaccards_all_categs'] = jac
+    eval_result['mIoU'] = np.mean(jac)
+    print('Evaluation of semantic segmentation ')
+    print('mIoU is %.2f' % (100*eval_result['mIoU']))
+    return eval_result
 
 
 if __name__ == '__main__':
+    torch.set_grad_enabled(False)
     main()

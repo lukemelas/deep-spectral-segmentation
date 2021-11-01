@@ -26,6 +26,7 @@ _inverse_transform = transforms.Compose([
     transforms.ToPILImage()
 ])
 
+
 # Params
 ParamsCRF = namedtuple('ParamsCRF', 'w1 alpha beta w2 gamma it')
 CRF_PARAMS = ParamsCRF(
@@ -36,6 +37,7 @@ CRF_PARAMS = ParamsCRF(
     gamma = 3,     # spatial std  # 3,   
     it    = 5.0,   # iteration  # 5.0, 
 )
+
 
 def get_largest_cc(mask: np.array):
     from skimage.measure import label as measure_label
@@ -169,7 +171,7 @@ def create_segments(
     prefix: str,
     features_root: str = './features',
     output_dir: str = './object_eigensegments',
-    K: int = 3, 
+    K: int = 6, 
     threshold: float = 0.0, 
     multiprocessing: int = 0
 ):
@@ -287,8 +289,18 @@ def _create_object_matte(inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, 
     # Load 
     index, (feature_path, segment_path) = inp
     index, path = inp
-    data_dict = torch.load(feature_path, map_location='cpu')
-    data_dict.update(torch.load(segment_path, map_location='cpu'))
+    try:
+        data_dict = torch.load(feature_path, map_location='cpu')
+        data_dict.update(torch.load(segment_path, map_location='cpu'))
+    except:
+        print(f'Problem with index: {index}')
+        return
+
+    # Output file
+    id = Path(data_dict['files'][0]).stem
+    output_file = str(Path(output_dir) / f'{prefix}-matte-{id}.png')
+    if Path(output_file).is_file():
+        return  # skip because already generated
 
     # Sizes
     image = _inverse_transform(data_dict['images_resized'].squeeze(0))
@@ -308,8 +320,8 @@ def _create_object_matte(inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, 
     rgba = stack_images(img_np, alpha)
 
     # Save dict
-    output_file = str(Path(output_dir) / f'{prefix}-matte-{index:05d}.pth')
-    torch.save(rgba, output_file)
+    # torch.save(rgba, output_file)
+    Image.fromarray((rgba * 255).astype(np.uint8)).save(output_file)
 
 
 @torch.no_grad()
@@ -345,11 +357,73 @@ def create_object_mattes(
     print(f'Done in {time.time() - start:.1f}s')
 
 
+def _create_object_mask(inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16):
+    
+    # Load 
+    index, (feature_path, segment_path) = inp
+    index, path = inp
+    try:
+        data_dict = torch.load(feature_path, map_location='cpu')
+        data_dict.update(torch.load(segment_path, map_location='cpu'))
+    except:
+        print(f'Problem with index: {index}')
+        return
+
+    # Output file
+    id = Path(data_dict['files'][0]).stem
+    output_file = str(Path(output_dir) / f'{prefix}-mask-{id}.png')
+    if Path(output_file).is_file():
+        return  # skip because already generated
+
+    # Eigenvector
+    eigensegment = data_dict['eigensegments_object'][0].numpy()
+    resized_eigensegment = resize(eigensegment, output_shape=data_dict['shape'][-2:])
+    resized_eigensegment[:eigensegment.shape[0], :eigensegment.shape[1]] = eigensegment
+
+    # Save dict
+    Image.fromarray(resized_eigensegment, 'L').save(output_file)
+
+
+@torch.no_grad()
+def create_object_masks(
+    prefix: str,
+    features_root: str = './features_VOC2012',
+    segments_root: str = './eigensegments_VOC2012',
+    output_dir: str = './mattes_VOC2012',
+    r: int = 15,
+    multiprocessing: int = 0
+):
+    """
+    Example:
+    python extract-segments.py create_object_masks \
+        --prefix VOC2012-dino_vits16 \
+        --features_root ./features_VOC2012 \
+        --segments_root ./eigensegments_VOC2012 \
+        --output_dir ./masks_VOC2012 \
+    """
+    start = time.time()
+    _fn = partial(_create_object_mask, r=r, prefix=prefix, output_dir=output_dir)
+    inputs = list(enumerate(zip(
+        sorted(Path(features_root).iterdir()),
+        sorted(Path(segments_root).iterdir()),
+    )))  # inputs are (index, (feature_file, segment_file)) tuples
+    if multiprocessing:
+        from multiprocessing import Pool
+        with Pool(multiprocessing) as pool:
+            list(tqdm(pool.imap(_fn, inputs), total=len(inputs)))
+    else:
+        for inp in tqdm(inputs):
+            _fn(inp)
+    print(f'Done in {time.time() - start:.1f}s')
+
+
+
 
 if __name__ == '__main__':
     fire.Fire(dict(
         create_segments=create_segments, 
         combine_segments=combine_segments, 
         create_object_mattes=create_object_mattes,
+        create_object_masks=create_object_masks,
         vis_segments=vis_segments,
     ))

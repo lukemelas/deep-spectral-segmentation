@@ -19,6 +19,8 @@ from skimage.morphology import binary_erosion, binary_dilation
 from skimage.transform import resize
 
 
+########################### HELPERS ###########################
+
 
 # Inverse transform
 _inverse_transform = transforms.Compose([
@@ -65,6 +67,9 @@ def trimap_from_mask(mask, r=15):
     return trimap
 
 
+########################### SCRIPTS ###########################
+
+
 def _create_object_segment(
     inp: Tuple[int, str], K: int, threshold: float, crf_params: Tuple, 
     prefix: str, output_dir: str, patch_size: int = 16
@@ -72,6 +77,7 @@ def _create_object_segment(
     # Load 
     index, path = inp
     data_dict = torch.load(path, map_location='cpu')
+    image_id = data_dict['files'][0][:-4]
 
     # Sizes
     P = patch_size
@@ -92,11 +98,11 @@ def _create_object_segment(
     # A = k_feats @ k_feats.T
     # eigenvalues, eigenvectors = torch.eig(A, eigenvectors=True)
     
-    # Eigenvectors of affinity matrix with scipy
-    from scipy.sparse.linalg import eigsh
-    A = k_feats @ k_feats.T
-    eigenvalues, eigenvectors = eigsh(A.cpu().numpy(), which='LM', k=K)  # find small eigenvalues
-    eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,))
+    # # Eigenvectors of affinity matrix with scipy
+    # from scipy.sparse.linalg import eigsh
+    # A = k_feats @ k_feats.T
+    # eigenvalues, eigenvectors = eigsh(A.cpu().numpy(), which='LM', k=K)  # find small eigenvalues
+    # eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,))
     
     # # Eigenvectors of laplacian matrix
     from scipy.sparse.linalg import eigsh
@@ -105,6 +111,7 @@ def _create_object_segment(
     _W_semantic = _W_semantic / _W_semantic.max()
     D = np.diag(_W_semantic @ np.ones(_W_semantic.shape[0]))  # row sum
     eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=10, which='SA', M=D)
+    eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors).float()
 
     # CRF
     new_data_dict = defaultdict(list)
@@ -162,25 +169,26 @@ def _create_object_segment(
     new_data_dict['pooled_features'] = torch.stack(new_data_dict['pooled_features'])
     new_data_dict['eigensegments_object'] = torch.stack(new_data_dict['eigensegments_object'])
     new_data_dict['pooled_features_object'] = torch.stack(new_data_dict['pooled_features_object'])
+    new_data_dict['file'] = data_dict['files'][0]
+    new_data_dict['id'] = data_dict.get('id', image_id)
     new_data_dict = dict(new_data_dict)
     # Save dict
-    output_file = str(Path(output_dir) / f'{prefix}-eigensegments-{index:05d}.pth')
+    output_file = str(Path(output_dir) / f'{prefix}-eigensegments-{image_id}.pth')
     torch.save(new_data_dict, output_file)
 
 
-@torch.no_grad()
 def create_segments(
     prefix: str,
     features_root: str = './features',
     output_dir: str = './eigensegments',
-    K: int = 6, 
+    K: int = 11, 
     threshold: float = 0.0, 
     multiprocessing: int = 0
 ):
     """
     Example:
     python extract-segments.py create_segments \
-        --prefix VOC2007-dino_vits16 \
+        --prefix VOC2012-dino_vits16 \
         --features_root ./features \
         --output_dir ./eigensegments \
     """
@@ -208,7 +216,7 @@ def combine_segments(
     python extract-segments.py combine_segments \
             --features_root ./features \
             --segments_root ./eigensegments \
-            --output_file ./eigensegments/VOC2007-dino_vits16-processed.pth
+            --output_file ./eigensegments/VOC2012-dino_vits16-processed.pth
     """
     
     # Load
@@ -230,6 +238,204 @@ def combine_segments(
     # Save
     torch.save(combined_output_dict, output_file)
     print(f'Saved file to {output_file}')
+
+
+def _create_object_matte(
+    inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16
+):
+    from pymatting import estimate_alpha_cf, stack_images
+
+    # Load 
+    index, (feature_path, segment_path) = inp
+    index, path = inp
+    try:
+        data_dict = torch.load(feature_path, map_location='cpu')
+        data_dict.update(torch.load(segment_path, map_location='cpu'))
+    except:
+        print(f'Problem with index: {index}')
+        return
+
+    # Output file
+    id = Path(data_dict['files'][0]).stem
+    output_file = str(Path(output_dir) / f'{prefix}-matte-{id}.png')
+    if Path(output_file).is_file():
+        return  # skip because already generated
+
+    # Sizes
+    image = _inverse_transform(data_dict['images_resized'].squeeze(0))
+    img_np = np.array(image) / 255
+    H, W = img_np.shape[:2]
+    H_, W_ = (H // patch_size, W // patch_size)
+
+    # Eigenvector
+    eigenvector = data_dict['eigenvectors'][0].reshape(H_,W_)
+    eigenvector = resize(eigenvector, output_shape=(H, W))  # upscale
+    object_segment = (eigenvector > 0).astype(float)
+    if 0.5 < np.mean(object_segment).item() < 1.0:  # reverse segment
+        object_segment = (1 - object_segment)
+    object_segment = get_largest_cc(object_segment)
+    trimap = trimap_from_mask(object_segment, r=r)
+    alpha = estimate_alpha_cf(img_np, trimap)
+    rgba = stack_images(img_np, alpha)
+
+    # Save dict
+    # torch.save(rgba, output_file)
+    Image.fromarray((rgba * 255).astype(np.uint8)).save(output_file)
+
+
+def create_object_mattes(
+    prefix: str,
+    features_root: str = './features_VOC2012',
+    segments_root: str = './eigensegments_VOC2012',
+    output_dir: str = './mattes_VOC2012',
+    r: int = 15,
+    multiprocessing: int = 0
+):
+    """
+    Example:
+    python extract-segments.py create_object_mattes \
+        --prefix VOC2012-dino_vits16 \
+        --features_root ./features_VOC2012 \
+        --segments_root ./eigensegments_VOC2012 \
+        --output_dir ./mattes_VOC2012 \
+    """
+    start = time.time()
+    _create_object_segment_fn = partial(_create_object_matte, r=r, prefix=prefix, output_dir=output_dir)
+    inputs = list(enumerate(zip(
+        sorted(Path(features_root).iterdir()),
+        sorted(Path(segments_root).iterdir()),
+    )))  # inputs are (index, (feature_file, segment_file)) tuples
+    if multiprocessing:
+        from multiprocessing import Pool
+        with Pool(multiprocessing) as pool:
+            list(tqdm(pool.imap(_create_object_segment_fn, inputs), total=len(inputs)))
+    else:
+        for inp in tqdm(inputs):
+            _create_object_segment_fn(inp)
+    print(f'Done in {time.time() - start:.1f}s')
+
+
+def _create_object_mask(
+    inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16
+):
+    
+    # Load 
+    index, (feature_path, segment_path) = inp
+    index, path = inp
+    try:
+        data_dict = torch.load(feature_path, map_location='cpu')
+        data_dict.update(torch.load(segment_path, map_location='cpu'))
+    except:
+        print(f'Problem with index: {index}')
+        return
+
+    # Output file
+    id = Path(data_dict['files'][0]).stem
+    output_file = str(Path(output_dir) / f'{prefix}-mask-{id}.png')
+    # if Path(output_file).is_file():
+    #     return  # skip because already generated
+
+    # # Eigenvector
+    eigensegment = data_dict['eigensegments_object'][0].numpy()
+    resized_eigensegment = resize(eigensegment, output_shape=data_dict['shape'][-2:])
+    resized_eigensegment[:eigensegment.shape[0], :eigensegment.shape[1]] = eigensegment
+
+    # Save dict
+    Image.fromarray((eigensegment * 255).astype(np.uint8)).save(output_file)
+
+
+def create_object_masks(
+    prefix: str,
+    features_root: str = './features_VOC2012',
+    segments_root: str = './eigensegments_VOC2012',
+    output_dir: str = './mattes_VOC2012',
+    r: int = 15,
+    multiprocessing: int = 0
+):
+    """
+    Example:
+    python extract-segments.py create_object_masks \
+        --prefix VOC2012-dino_vits16 \
+        --features_root ./features_VOC2012 \
+        --segments_root ./eigensegments_VOC2012 \
+        --output_dir ./masks_VOC2012 \
+    """
+    start = time.time()
+    _fn = partial(_create_object_mask, r=r, prefix=prefix, output_dir=output_dir)
+    inputs = list(enumerate(zip(
+        sorted(Path(features_root).iterdir()),
+        sorted(Path(segments_root).iterdir()),
+    )))  # inputs are (index, (feature_file, segment_file)) tuples
+    if multiprocessing:
+        from multiprocessing import Pool
+        with Pool(multiprocessing) as pool:
+            list(tqdm(pool.imap(_fn, inputs), total=len(inputs)))
+    else:
+        for inp in tqdm(inputs):
+            _fn(inp)
+    print(f'Done in {time.time() - start:.1f}s')
+
+
+def _create_multilabel_mask(
+    inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16
+):
+    
+    # Load 
+    index, (feature_path, segment_path) = inp
+    index, path = inp
+    try:
+        data_dict = torch.load(feature_path, map_location='cpu')
+        data_dict.update(torch.load(segment_path, map_location='cpu'))
+    except:
+        print(f'Problem with index: {index}')
+        return
+
+    # Output file
+    id = Path(data_dict['files'][0]).stem
+    output_file = str(Path(output_dir) / f'{prefix}-mask-{id}.png')
+    if Path(output_file).is_file():
+        return  # skip because already generated
+
+    # Eigenvector
+    eigensegment = data_dict['eigensegments_object'][0].numpy()
+    resized_eigensegment = resize(eigensegment, output_shape=data_dict['shape'][-2:])
+    resized_eigensegment[:eigensegment.shape[0], :eigensegment.shape[1]] = eigensegment
+
+    # Save dict
+    Image.fromarray(resized_eigensegment, 'L').save(output_file)
+
+
+def create_multilabel_masks(
+    prefix: str,
+    features_root: str = './features_VOC2012',
+    segments_root: str = './eigensegments_VOC2012',
+    output_dir: str = './mattes_VOC2012',
+    r: int = 15,
+    multiprocessing: int = 0
+):
+    """
+    Example:
+    python extract-segments.py create_multilabel_masks \
+        --prefix VOC2012-dino_vits16 \
+        --features_root ./features_VOC2012 \
+        --segments_root ./eigensegments_VOC2012 \
+        --output_dir ./masks_VOC2012 \
+    """
+    raise NotImplementedError()
+    start = time.time()
+    _fn = partial(_create_multilabel_mask, r=r, prefix=prefix, output_dir=output_dir)
+    inputs = list(enumerate(zip(
+        sorted(Path(features_root).iterdir()),
+        sorted(Path(segments_root).iterdir()),
+    )))  # inputs are (index, (feature_file, segment_file)) tuples
+    if multiprocessing:
+        from multiprocessing import Pool
+        with Pool(multiprocessing) as pool:
+            list(tqdm(pool.imap(_fn, inputs), total=len(inputs)))
+    else:
+        for inp in tqdm(inputs):
+            _fn(inp)
+    print(f'Done in {time.time() - start:.1f}s')
 
 
 def vis_segments(
@@ -285,203 +491,8 @@ def vis_segments(
         cols[6].image(eig_seg[2], caption='eig seg 2')
 
 
-def _create_object_matte(inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16):
-    from pymatting import estimate_alpha_cf, stack_images
-
-    # Load 
-    index, (feature_path, segment_path) = inp
-    index, path = inp
-    try:
-        data_dict = torch.load(feature_path, map_location='cpu')
-        data_dict.update(torch.load(segment_path, map_location='cpu'))
-    except:
-        print(f'Problem with index: {index}')
-        return
-
-    # Output file
-    id = Path(data_dict['files'][0]).stem
-    output_file = str(Path(output_dir) / f'{prefix}-matte-{id}.png')
-    if Path(output_file).is_file():
-        return  # skip because already generated
-
-    # Sizes
-    image = _inverse_transform(data_dict['images_resized'].squeeze(0))
-    img_np = np.array(image) / 255
-    H, W = img_np.shape[:2]
-    H_, W_ = (H // patch_size, W // patch_size)
-
-    # Eigenvector
-    eigenvector = data_dict['eigenvectors'][0].reshape(H_,W_)
-    eigenvector = resize(eigenvector, output_shape=(H, W))  # upscale
-    object_segment = (eigenvector > 0).astype(float)
-    if 0.5 < np.mean(object_segment).item() < 1.0:  # reverse segment
-        object_segment = (1 - object_segment)
-    object_segment = get_largest_cc(object_segment)
-    trimap = trimap_from_mask(object_segment, r=r)
-    alpha = estimate_alpha_cf(img_np, trimap)
-    rgba = stack_images(img_np, alpha)
-
-    # Save dict
-    # torch.save(rgba, output_file)
-    Image.fromarray((rgba * 255).astype(np.uint8)).save(output_file)
-
-
-@torch.no_grad()
-def create_object_mattes(
-    prefix: str,
-    features_root: str = './features_VOC2012',
-    segments_root: str = './eigensegments_VOC2012',
-    output_dir: str = './mattes_VOC2012',
-    r: int = 15,
-    multiprocessing: int = 0
-):
-    """
-    Example:
-    python extract-segments.py create_object_mattes \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features_VOC2012 \
-        --segments_root ./eigensegments_VOC2012 \
-        --output_dir ./mattes_VOC2012 \
-    """
-    start = time.time()
-    _create_object_segment_fn = partial(_create_object_matte, r=r, prefix=prefix, output_dir=output_dir)
-    inputs = list(enumerate(zip(
-        sorted(Path(features_root).iterdir()),
-        sorted(Path(segments_root).iterdir()),
-    )))  # inputs are (index, (feature_file, segment_file)) tuples
-    if multiprocessing:
-        from multiprocessing import Pool
-        with Pool(multiprocessing) as pool:
-            list(tqdm(pool.imap(_create_object_segment_fn, inputs), total=len(inputs)))
-    else:
-        for inp in tqdm(inputs):
-            _create_object_segment_fn(inp)
-    print(f'Done in {time.time() - start:.1f}s')
-
-
-def _create_object_mask(inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16):
-    
-    # Load 
-    index, (feature_path, segment_path) = inp
-    index, path = inp
-    try:
-        data_dict = torch.load(feature_path, map_location='cpu')
-        data_dict.update(torch.load(segment_path, map_location='cpu'))
-    except:
-        print(f'Problem with index: {index}')
-        return
-
-    # Output file
-    id = Path(data_dict['files'][0]).stem
-    output_file = str(Path(output_dir) / f'{prefix}-mask-{id}.png')
-    if Path(output_file).is_file():
-        return  # skip because already generated
-
-    # Eigenvector
-    eigensegment = data_dict['eigensegments_object'][0].numpy()
-    resized_eigensegment = resize(eigensegment, output_shape=data_dict['shape'][-2:])
-    resized_eigensegment[:eigensegment.shape[0], :eigensegment.shape[1]] = eigensegment
-
-    # Save dict
-    Image.fromarray(resized_eigensegment, 'L').save(output_file)
-
-
-@torch.no_grad()
-def create_object_masks(
-    prefix: str,
-    features_root: str = './features_VOC2012',
-    segments_root: str = './eigensegments_VOC2012',
-    output_dir: str = './mattes_VOC2012',
-    r: int = 15,
-    multiprocessing: int = 0
-):
-    """
-    Example:
-    python extract-segments.py create_object_masks \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features_VOC2012 \
-        --segments_root ./eigensegments_VOC2012 \
-        --output_dir ./masks_VOC2012 \
-    """
-    start = time.time()
-    _fn = partial(_create_object_mask, r=r, prefix=prefix, output_dir=output_dir)
-    inputs = list(enumerate(zip(
-        sorted(Path(features_root).iterdir()),
-        sorted(Path(segments_root).iterdir()),
-    )))  # inputs are (index, (feature_file, segment_file)) tuples
-    if multiprocessing:
-        from multiprocessing import Pool
-        with Pool(multiprocessing) as pool:
-            list(tqdm(pool.imap(_fn, inputs), total=len(inputs)))
-    else:
-        for inp in tqdm(inputs):
-            _fn(inp)
-    print(f'Done in {time.time() - start:.1f}s')
-
-
-def _create_multilabel_mask(inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16):
-    
-    # Load 
-    index, (feature_path, segment_path) = inp
-    index, path = inp
-    try:
-        data_dict = torch.load(feature_path, map_location='cpu')
-        data_dict.update(torch.load(segment_path, map_location='cpu'))
-    except:
-        print(f'Problem with index: {index}')
-        return
-
-    # Output file
-    id = Path(data_dict['files'][0]).stem
-    output_file = str(Path(output_dir) / f'{prefix}-mask-{id}.png')
-    if Path(output_file).is_file():
-        return  # skip because already generated
-
-    # Eigenvector
-    eigensegment = data_dict['eigensegments_object'][0].numpy()
-    resized_eigensegment = resize(eigensegment, output_shape=data_dict['shape'][-2:])
-    resized_eigensegment[:eigensegment.shape[0], :eigensegment.shape[1]] = eigensegment
-
-    # Save dict
-    Image.fromarray(resized_eigensegment, 'L').save(output_file)
-
-
-@torch.no_grad()
-def create_multilabel_masks(
-    prefix: str,
-    features_root: str = './features_VOC2012',
-    segments_root: str = './eigensegments_VOC2012',
-    output_dir: str = './mattes_VOC2012',
-    r: int = 15,
-    multiprocessing: int = 0
-):
-    """
-    Example:
-    python extract-segments.py create_object_masks \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features_VOC2012 \
-        --segments_root ./eigensegments_VOC2012 \
-        --output_dir ./masks_VOC2012 \
-    """
-    start = time.time()
-    _fn = partial(_create_multilabel_mask, r=r, prefix=prefix, output_dir=output_dir)
-    inputs = list(enumerate(zip(
-        sorted(Path(features_root).iterdir()),
-        sorted(Path(segments_root).iterdir()),
-    )))  # inputs are (index, (feature_file, segment_file)) tuples
-    if multiprocessing:
-        from multiprocessing import Pool
-        with Pool(multiprocessing) as pool:
-            list(tqdm(pool.imap(_fn, inputs), total=len(inputs)))
-    else:
-        for inp in tqdm(inputs):
-            _fn(inp)
-    print(f'Done in {time.time() - start:.1f}s')
-
-
-
-
 if __name__ == '__main__':
+    torch.set_grad_enabled(False)
     fire.Fire(dict(
         create_segments=create_segments, 
         combine_segments=combine_segments, 

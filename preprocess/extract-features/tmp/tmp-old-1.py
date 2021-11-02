@@ -80,19 +80,31 @@ for k in range(2):
 _W_semantic = (W_semantic * (W_semantic > 0))
 _W_semantic = _W_semantic / _W_semantic.max()
 _row_sum = _W_semantic @ np.ones(_W_semantic.shape[0])
-D = np.diag(_row_sum)  # np.sum(_W_semantic, axis=1))
-# D_12 = np.diag(1 / np.sqrt(_row_sum))  # np.sum(_W_semantic, axis=1)))
-# L = D_12 @ D_12 @ (D - _W_semantic)
-# L = np.eye(_W_semantic.shape[0]) - np.diag(1 / (_W_semantic @ np.ones(_W_semantic.shape[0]))) @ _W_semantic
-# eigenvalues, eigenvectors = eigsh(L, k=10, which='SA')
-eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=10, which='SA', M=D)
-# eigenvalues, eigenvectors = eigenvalues[::-1], eigenvectors[:, ::-1]
-for k in range(10):
+D = np.diag(_row_sum)
+# eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=5, which='SM', M=D)
+eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=5, sigma=0, which='LM', M=D)
+for k in range(5):
     print(f'Laplacian {k} ({eigenvalues[k]:.3f}):')
     plt.imshow(eigenvectors[:, k].reshape(H_, W_))
     plt.show()
 
 # %%
+
+# Laplacian
+_W_semantic = (W_semantic * (W_semantic > 0))
+_W_semantic = _W_semantic / _W_semantic.max()
+_row_sum = _W_semantic @ np.ones(_W_semantic.shape[0])
+D = np.diag(_row_sum)  # np.sum(_W_semantic, axis=1))
+# D_12 = np.diag(1 / np.sqrt(_row_sum))  # np.sum(_W_semantic, axis=1)))
+# L = D_12 @ D_12 @ (D - _W_semantic)
+# L = np.eye(_W_semantic.shape[0]) - np.diag(1 / (_W_semantic @ np.ones(_W_semantic.shape[0]))) @ _W_semantic
+# eigenvalues, eigenvectors = eigsh(L, k=10, which='SM')
+eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=10, which='SM', M=D)
+# eigenvalues, eigenvectors = eigenvalues[::-1], eigenvectors[:, ::-1]
+for k in range(10):
+    print(f'Laplacian {k} ({eigenvalues[k]:.3f}):')
+    plt.imshow(eigenvectors[:, k].reshape(H_, W_))
+    plt.show()
 
 
 # %%

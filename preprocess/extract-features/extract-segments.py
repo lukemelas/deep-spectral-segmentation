@@ -110,7 +110,8 @@ def _create_object_segment(
     _W_semantic = (A * (A > 0))
     _W_semantic = _W_semantic / _W_semantic.max()
     D = np.diag(_W_semantic @ np.ones(_W_semantic.shape[0]))  # row sum
-    eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=10, which='SA', M=D)
+    # eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, which='SM', M=D)
+    eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, sigma=0, which='LM', M=D)
     eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors).float()
 
     # CRF
@@ -181,7 +182,7 @@ def create_segments(
     prefix: str,
     features_root: str = './features',
     output_dir: str = './eigensegments',
-    K: int = 11, 
+    K: int = 5, 
     threshold: float = 0.0, 
     multiprocessing: int = 0
 ):
@@ -198,8 +199,10 @@ def create_segments(
     inputs = list(enumerate(sorted(Path(features_root).iterdir())))  # inputs are (index, files) tuples
     if multiprocessing:
         from multiprocessing import Pool
+        print('Starting multiprocessing')
         with Pool(multiprocessing) as pool:
-            list(tqdm(pool.imap(_create_object_segment_fn, inputs), total=len(inputs)))
+            for _ in tqdm(pool.imap(_create_object_segment_fn, inputs), total=len(inputs)):
+                pass
     else:
         for inp in tqdm(inputs):
             _create_object_segment_fn(inp)

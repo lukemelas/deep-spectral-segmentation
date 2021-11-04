@@ -9,6 +9,8 @@ preprocess/extract-features/eigensegments_*
 preprocess/extract-features/mattes_*
 preprocess/extract-features/masks_*
 preprocess/extract-features/multilabel_masks_*
+preprocess/extract-features/semantic_segmentations_*
+preprocess/extract-features/crf_semantic_segmentations_*
 
 
 # Byte-compiled / optimized / DLL files
@@ -140,6 +142,3 @@ venv.bak/
 lightning_logs/
 MNIST
 .DS_Store
-preprocess/extract-features/eigensegments_VOC2012
-preprocess/extract-features/object_masks_VOC2012
-preprocess/extract-features/masks_COCO

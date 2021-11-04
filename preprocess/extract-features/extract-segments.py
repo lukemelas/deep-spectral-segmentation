@@ -687,6 +687,7 @@ def create_crf_semantic_segmentations(
     Example:
     python extract-segments.py create_crf_semantic_segmentations \
         --prefix VOC2012-dino_vits16 \
+        --features_root ./features_VOC2012 \
         --semantic_segmentations_root ./semantic_segmentations_VOC2012 \
         --output_dir ./crf_semantic_segmentations_VOC2012 \
     """
@@ -715,11 +716,11 @@ def vis_segments(
     print(f'{len(inputs)=}')
 
     # Combine
-    for i, (ff, fs) in inputs:
+    for i, (features_file, fs) in inputs:
         if i > 20: break
 
         # Combine
-        features_dict = torch.load(ff, map_location='cpu')
+        features_dict = torch.load(features_file, map_location='cpu')
         segments_dict = torch.load(fs, map_location='cpu')
         data_dict = defaultdict(list)
         for k, v in features_dict.items():
@@ -748,57 +749,52 @@ def vis_segments(
         cols[6].image(eig_seg[2], caption='eig seg 2')
 
 
-# def vis_segmentations(
-#     images_list: str = '/data_q1_d/machine-learning-datasets/image-captioning/COCO/2014/train2014',
-#     images_root: str = '/data_q1_d/machine-learning-datasets/image-captioning/COCO/2014/train2014',
-#     segmentations_root: str = './semantic_segmentations_VOC2012',
-# ):
-#     """
-#     Example:
-#     streamlit run extract-segments.py vis_segments -- \
-#         --images_root ./features_VOC2012 \
-#         --segmentations_root ./eigensegments_VOC2012 \
-#     """
-#     # Streamlit setup
-#     import streamlit as st
-#     st.set_page_config(layout='wide')
+def vis_semantic_segmentations(
+    images_file: str = './image-lists/VOC2012.txt',
+    images_root: str = '/path/to/JPEGImages',
+    semantic_segmentations_str: str = './semantic_segmentations_VOC2012/VOC2012-dino_vits16-mask-{image_id}.png',
+):
+    """
+    Example:
+    streamlit run extract-segments.py vis_semantic_segmentations -- \
+        --images_file ./image-lists/VOC2012.txt \
+        --images_root /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012/VOCdevkit/VOC2012/JPEGImages \
+        --semantic_segmentations_str ./crf_semantic_segmentations_VOC2012/VOC2012-dino_vits16-mask-{image_id}.png \
+    """
+    # Streamlit setup
+    from skimage.color import label2rgb
+    from matplotlib.cm import get_cmap
+    import streamlit as st
+    st.set_page_config(layout='wide')
 
-#     # Load
-#     inputs = _get_feature_and_segment_inputs(features_root=features_root, segments_root=segments_root)
-#     print(f'{len(inputs)=}')
+    # Load
+    colors = get_cmap('tab10', 21).colors[:, :3]
+    for i, image_name in enumerate(Path(images_file).read_text().splitlines()):
+        image_id = Path(image_name).stem
+        semantic_segmap_file = semantic_segmentations_str.format(image_id=image_id)
+        image_file = Path(images_root) / image_name
+        # target_file = Path(image_root) / '..' / ''
 
-#     # Combine
-#     for i, (ff, fs) in inputs:
-#         if i > 20: break
+        # Load
+        image = np.array(Image.open(image_file).convert('RGB'))
+        semantic_segmap = np.array(Image.open(semantic_segmap_file))
 
-#         # Combine
-#         features_dict = torch.load(ff, map_location='cpu')
-#         segments_dict = torch.load(fs, map_location='cpu')
-#         data_dict = defaultdict(list)
-#         for k, v in features_dict.items():
-#             data_dict[k] = v[0] if (isinstance(v, list) and len(v) == 1) else v
-#         for k, v in segments_dict.items():
-#             data_dict[k] = v[0] if (isinstance(v, list) and len(v) == 1) else v
-#         data_dict = dict(data_dict)
+        # Color
+        blank_segmap_overlay = label2rgb(label=semantic_segmap, image=np.full_like(image, 255), 
+            colors=colors[np.unique(semantic_segmap)], bg_label=0, alpha=1.0)
+        image_segmap_overlay = label2rgb(label=semantic_segmap, image=image, 
+            colors=colors[np.unique(semantic_segmap)], bg_label=0, alpha=0.45)
 
-#         # Print stuff
-#         if i == 0:
-#             for k, v in data_dict.items():
-#                 st.write(k, type(v), v.shape if torch.is_tensor(v) else (v if isinstance(v, str) else None))
+        # Display stuff
+        cols = st.columns(5)
+        cols[0].image(image, caption=image_id)
+        # cols[1].image(blank_target_overlay, caption='target')
+        # cols[2].image(image_target_overlay, caption='target')
+        cols[1].image(blank_segmap_overlay, caption=str(np.unique(semantic_segmap).tolist()))
+        cols[2].image(image_segmap_overlay, caption=str(np.unique(semantic_segmap).tolist()))
 
-#         # Display stuff
-#         img = data_dict['images_resized']
-#         image = _inverse_transform(img.squeeze(0))
-#         eig_seg = data_dict['eigensegments'].numpy() * 255
-#         obj_seg = data_dict['eigensegments_object'].numpy() * 255
-#         cols = st.columns(1 + 3 + 3)
-#         cols[0].image(image, caption=f'{data_dict["files"][0]} ({i})')
-#         cols[1].image(obj_seg[0], caption='obj seg 0')
-#         cols[2].image(obj_seg[1], caption='obj seg 1')
-#         cols[3].image(obj_seg[2], caption='obj seg 2')
-#         cols[4].image(eig_seg[0], caption='eig seg 0')
-#         cols[5].image(eig_seg[1], caption='eig seg 1')
-#         cols[6].image(eig_seg[2], caption='eig seg 2')
+        if i > 30:
+            break
 
 
 if __name__ == '__main__':
@@ -811,4 +807,5 @@ if __name__ == '__main__':
         create_semantic_segmentations=create_semantic_segmentations,
         create_crf_semantic_segmentations=create_crf_semantic_segmentations,
         vis_segments=vis_segments,
+        vis_semantic_segmentations=vis_semantic_segmentations,
     ))

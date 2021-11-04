@@ -24,8 +24,8 @@ from contexttimer import Timer
 # %%
 
 # Load and combine dictionaries
-features_dict = torch.load('../features_VOC2007/VOC2007-image-features-dino_vits16-00115.pth')
-segments_dict = torch.load('../eigensegments_VOC2007/VOC2007-dino_vits16-eigensegments-00115.pth')  # ./eigensegments
+features_dict = torch.load('../features_VOC2012/VOC2012-dino_vits16-features-2007_000027.pth')
+segments_dict = torch.load('../eigensegments_VOC2012/VOC2012-dino_vits16-eigensegments-2007_000027.pth')  # ./eigensegments
 data_dict = {**features_dict, **segments_dict}
 
 # %%
@@ -97,13 +97,17 @@ from sklearn.cluster import KMeans, AgglomerativeClustering
 # K-means
 n_clusters = 5
 kmeans = KMeans(n_clusters=n_clusters)
-clusters = kmeans.fit_predict(eigenvectors.numpy().T)
+# clusters = kmeans.fit_predict(eigenvectors[:, 1:].numpy().T)
+clusters = kmeans.fit_predict(eigenvectors[:, 1:])
 imshow(clusters.reshape(H_, W_))
 
 # # Other
 # kmeans = AgglomerativeClustering(n_clusters=2)
 # clusters = kmeans.fit_predict(eigenvectors.numpy().T)
 # imshow(clusters.reshape(H_, W_))
+
+# %%
+plt.imshow(np.array(Image.fromarray(clusters.reshape(H_, W_)).convert('L')))
 
 # %%
 

@@ -10,7 +10,22 @@ import torch.distributed as dist
 from tqdm import tqdm
 import fire
 
-from dataset import get_transforms, ImagesDataset
+from dataset import ImagesDataset
+
+
+def _get_model(name):
+    if 'dino' in name:
+        model = torch.hub.load('facebookresearch/dino:main', name)
+        model.fc = torch.nn.Identity()
+        val_transform = transforms.Compose([
+            transforms.ToTensor(), transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        ])
+        patch_size = model.patch_embed.patch_size
+        num_heads = model.blocks[0].attn.num_heads
+    else:
+        raise NotImplementedError()
+    model = model.eval()
+    return model, val_transform, patch_size, num_heads
 
 
 @torch.no_grad()
@@ -34,17 +49,7 @@ def extract_features(
 
     # Models
     model_name_lower = model_name.lower()
-    if 'dino' in model_name:
-        model = torch.hub.load('facebookresearch/dino:main', model_name)
-        model.fc = torch.nn.Identity()
-        val_transform = transforms.Compose([
-            transforms.ToTensor(), transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        ])
-        patch_size = model.patch_embed.patch_size
-        num_heads = model.blocks[0].attn.num_heads
-    else:
-        raise NotImplementedError()
-    model = model.eval()
+    model, val_transform, patch_size, num_heads = _get_model(model_name_lower)
 
     # Add hook
     feat_out = {}
@@ -88,7 +93,7 @@ def extract_features(
         output_dict['q'] = q.transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
         output_dict['v'] = v.transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
         output_dict['indices'] = indices
-        output_dict['files'] = files
+        output_dict['file'] = files[0]
         output_dict['shape'] = (B, C, H, W)
         output_dict['images_resized'] = images
         output_dict = {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in output_dict.items()}
@@ -102,7 +107,7 @@ def extract_features(
             batch_output_dict = output_dict
         # Save
         # output_dict = {'features': output.detach().cpu(), 'files': batch_files, 'indices': indices.detach().cpu()}
-        output_file = str(Path(output_dir) / f'{prefix}-image-features-{model_name_lower}-{i:05d}.pth')
+        output_file = str(Path(output_dir) / f'{prefix}-features-{model_name_lower}-{i:05d}.pth')
         accelerator.save(output_dict, output_file)
         accelerator.wait_for_everyone()
     print(f'Saved features to {output_dir}')

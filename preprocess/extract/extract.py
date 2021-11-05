@@ -1,210 +1,147 @@
-"""An experimental script to create eigensegments"""
-import time
-from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Tuple, Union
-import torch
-import torch.nn.functional as F
-from functools import partial
 from PIL import Image
 from accelerate import Accelerator
-from torchvision import transforms
-import torch.distributed as dist
-from tqdm import tqdm
-import numpy as np
-import fire
-from collections import defaultdict, namedtuple
-import denseCRF
-from scipy.sparse.linalg import eigsh
-from skimage.morphology import binary_erosion, binary_dilation
-from skimage.transform import resize
+from collections import defaultdict
+from functools import partial
 from multiprocessing import Pool
+from pathlib import Path
+from scipy.sparse.linalg import eigsh
 from skimage.measure import label as measure_label
 from skimage.measure import perimeter as measure_perimeter
-from sklearn.cluster import MiniBatchKMeans, SpectralClustering
+from skimage.morphology import binary_erosion, binary_dilation
+from skimage.transform import resize
+from torchvision import transforms
+from tqdm import tqdm
+from typing import Callable, Iterable, List, Optional, Tuple, Union
+from typing import Optional
+import denseCRF
+import fire
+import numpy as np
+import time
+import torch
+import torch.distributed as dist
+import torch.nn.functional as F
+from sklearn.cluster import MiniBatchKMeans
 try:
     from sklearnex.cluster import KMeans, DBSCAN
     print('Using sklearnex (accelerated sklearn)')
 except:
     from sklearn.cluster import KMeans, DBSCAN
 
-
-########################### HELPERS ###########################
-
-
-# Inverse transform
-_inverse_transform = transforms.Compose([
-    transforms.Normalize(mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225], std=[1/0.229, 1/0.224, 1/0.225]),
-    transforms.ToPILImage()
-])
+import extract_utils as utils
 
 
-# Params
-ParamsCRF = namedtuple('ParamsCRF', 'w1 alpha beta w2 gamma it')
-CRF_PARAMS = ParamsCRF(
-    w1    = 6,     # weight of bilateral term  # 10.0,
-    alpha = 40,    # spatial std  # 80,  
-    beta  = 13,    # rgb  std  # 13,  
-    w2    = 3,     # weight of spatial term  # 3.0, 
-    gamma = 3,     # spatial std  # 3,   
-    it    = 5.0,   # iteration  # 5.0, 
-)
-
-
-def get_largest_cc(mask: np.array):
-    from skimage.measure import label as measure_label
-    labels = measure_label(mask)  # get connected components
-    largest_cc_index = np.argmax(np.bincount(labels.flat)[1:]) + 1
-    largest_cc_mask = (labels == largest_cc_index)
-    return largest_cc_mask
-
-
-def erode_or_dilate_mask(x: Union[torch.Tensor, np.ndarray], r: int = 0, erode=True):
-    fn = binary_erosion if erode else binary_dilation
-    for _ in range(r):
-        x = fn(x)
-    return x
-
-
-def trimap_from_mask(mask, r=15):
-    is_fg = erode_or_dilate_mask(mask, r=r, erode=True)
-    is_bg = ~(erode_or_dilate_mask(mask, r=r, erode=False))
-    if is_fg.sum() == 0:
-        is_fg = erode_or_dilate_mask(mask, r=1, erode=True)
-    trimap = np.full_like(mask, fill_value=0.5, dtype=float)
-    trimap[is_fg] = 1.0
-    trimap[is_bg] = 0.0
-    return trimap
-
-
-def get_roundness(mask: np.array):
-    r"""Get roundness := (4 pi area) / perimeter^2"""
-
-    # Get connected components
-    component, num = measure_label(mask, return_num=True, background=0)
-    if num == 0:
-        return 0
-
-    # Get area of biggest connected component
-    areas, perimeters = [], []
-    for i in range(1, num + 1):
-        component_i = (component == i)
-        area = np.sum(component_i)
-        perimeter = measure_perimeter(component_i)
-        areas.append(area)
-        perimeters.append(perimeter)
-    max_component = np.argmax(areas)
-    max_component_area = areas[max_component]
-    num_pixels = mask.shape[-1] * mask.shape[-2]
-    if num_pixels * 0.05 < max_component_area < num_pixels * 0.90:
-        max_component_perimeter = perimeters[max_component]
-        roundness = max_component_area / max_component_perimeter ** 2
-        return roundness
-    else:
-        return 0
-
-
-def get_border_fraction(segmap: np.array):
-    num_border_pixels = 2 * (segmap.shape[0] + segmap.shape[1])
-    counts_map = {idx: 0 for idx in np.unique(segmap)}
-    np.zeros(len(np.unique(segmap)))
-    for border in [segmap[:, 0], segmap[:, -1], segmap[0, :], segmap[-1, :]]:
-        unique, counts = np.unique(border, return_counts=True)
-        for idx, count in zip(unique.tolist(), counts.tolist()):
-            counts_map[idx] += count
-    # normlized_counts_map = {idx: count / num_border_pixels for idx, count in counts_map.items()}
-    indices = np.array(list(counts_map.keys()))
-    normlized_counts = np.array(list(counts_map.values())) / num_border_pixels
-    return indices, normlized_counts
-
-
-def get_border_background_heuristic(segmap: np.array, threshold: float = 0.60) -> Optional[int]:
-    indices, normlized_counts = get_border_fraction(segmap)
-    if np.max(normlized_counts) > threshold:
-        return indices[np.argmax(normlized_counts)].item()
-    return None
-
-
-def get_roundness_background_heuristic(mask: np.array, threshold: float = 0.05) -> bool:
-    return get_roundness(mask) < threshold  # returns False if the background is too round
-
-
-########################### SCRIPTS ###########################
-
-
-def _get_feature_and_segment_inputs(features_root, segments_root, segments_name='eigensegments', ext='.pth') -> List[Tuple[int, Tuple[str, str]]]:
-    inputs = []  # inputs are (index, (feature_file, segment_file)) tuples
-    missing_files = 0
-    for p in tqdm(sorted(Path(features_root).iterdir()), desc='Loading file list'):
-        features_file = str(p)
-        segments_file = str(Path(segments_root) / p.name.replace('features', segments_name).replace('.pth', ext))
-        if Path(features_file).is_file() and Path(segments_file).is_file():
-            inputs.append((features_file, segments_file))
-        else:
-            missing_files += 1
-    print(f'Loaded {len(inputs)} files. There were {missing_files} missing files.' )
-    inputs = list(enumerate(inputs))
-    return inputs
-
-
-def _parallel_process(inputs: Iterable, fn: Callable, multiprocessing: int = 0):
-    start = time.time()
-    if multiprocessing:
-        print('Starting multiprocessing')
-        with Pool(multiprocessing) as pool:
-            for _ in tqdm(pool.imap(fn, inputs), total=len(inputs)):
-                pass
-    else:
-        for inp in tqdm(inputs):
-            fn(inp)
-    print(f'Finished in {time.time() - start:.1f}s')
-
-
-def _create_object_segment(
-    inp: Tuple[int, str], K: int, threshold: float, crf_params: Tuple, 
-    prefix: str, output_dir: str, patch_size: int = 16
+@torch.no_grad()
+def extract_features(
+    images_list: str,
+    images_root: Optional[str] = None,
+    model_name: str = 'dino_vits16',
+    batch_size: int = 1024,
+    output_dir: str = './features',
 ):
-    index, path = inp
-    
-    # try:
-    if True:
-    
-        # Load 
-        data_dict = torch.load(path, map_location='cpu')
-        image_id = data_dict['file'][:-4]
-        
-        # Load
-        output_file = str(Path(output_dir) / f'{prefix}-eigensegments-{image_id}.pth')
-        if Path(output_file).is_file():
-            return  # skip because already generated
+    """
+    Example:
+        python extract.py extract_features \
+            --images_list "./data/VOC2012/lists/images.txt" \
+            --images_root "./data/VOC2012/images" \
+            --output_dir "./data/VOC2012/features" \
+            --model_name dino_vits16 \
+            --batch_size 1
+    """
 
-        # Sizes
+    # Models
+    model_name_lower = model_name.lower()
+    model, val_transform, patch_size, num_heads = utils.get_model(model_name_lower)
+
+    # Add hook
+    feat_out = {}
+    def hook_fn_forward_qkv(module, input, output):
+        feat_out["qkv"] = output
+    model._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(hook_fn_forward_qkv)
+
+    # Dataset
+    filenames = Path(images_list).read_text().splitlines()
+    dataset = utils.ImagesDataset(filenames=filenames, images_root=images_root, transform=val_transform)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=8)
+    print(f'Dataset size: {len(dataset)=}')
+    print(f'Dataloader size: {len(dataloader)=}')
+
+    # Prepare
+    accelerator = Accelerator(fp16=True, cpu=False)
+    model, dataloader = accelerator.prepare(model, dataloader)
+
+    # Process
+    for i, (images, files, indices) in enumerate(tqdm(dataloader, desc='Processing')):
+        output_dict = {}
+
+        # Reshape image
         P = patch_size
-        B, C, H, W = data_dict['shape']
-        assert B == 1, 'assumption violated :('
+        B, C, H, W = images.shape
         H_patch, W_patch = H // P, W // P
         H_pad, W_pad = H_patch * P, W_patch * P
-        k_feats = data_dict['k'].squeeze()  # CPU
-        img_np = np.array(_inverse_transform(data_dict['images_resized'].squeeze(0)))
+        T = H_patch * W_patch + 1  # number of tokens, add 1 for [CLS]
+        # images = F.interpolate(images, size=(H_pad, W_pad), mode='bilinear')  # resize image
+        images = images[:, :, :H_pad, :W_pad]
 
-        # Upscale features
-        features = F.interpolate(
-            data_dict['out'][0][:, 1:].permute(2, 0, 1).reshape(1, -1, H_patch, W_patch), 
-            size=(H_pad, W_pad), mode='bilinear', align_corners=False
-        ).squeeze()
+        # Forward
+        out = accelerator.unwrap_model(model).get_intermediate_layers(images)[0].squeeze(0)
 
-        # # Eigenvectors of affinity matrix
-        # A = k_feats @ k_feats.T
-        # eigenvalues, eigenvectors = torch.eig(A, eigenvectors=True)
-        
-        # # Eigenvectors of affinity matrix with scipy
-        # from scipy.sparse.linalg import eigsh
-        # A = k_feats @ k_feats.T
-        # eigenvalues, eigenvectors = eigsh(A.cpu().numpy(), which='LM', k=K)  # find small eigenvalues
-        # eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,))
-        
-        # # Eigenvectors of laplacian matrix
-        from scipy.sparse.linalg import eigsh
-        A = (k_feats @ k_feats.T).cpu().numpy()
+        # Reshape
+        output_dict['out'] = out
+        output_qkv = feat_out["qkv"].reshape(B, T, 3, num_heads, -1 // num_heads).permute(2, 0, 3, 1, 4)
+        output_dict['k'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+        output_dict['q'] = output_qkv[1].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+        output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+        output_dict['indices'] = indices[0]
+        output_dict['file'] = files[0]
+        output_dict['id'] = id = Path(files[0]).stem
+        output_dict['model_name'] = model_name
+        output_dict['patch_size'] = 16
+        output_dict['shape'] = (B, C, H, W)
+        output_dict = {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in output_dict.items()}
+
+        # Save
+        output_file = str(Path(output_dir) / f'{id}.pth')
+        accelerator.save(output_dict, output_file)
+        accelerator.wait_for_everyone()
+    
+    print(f'Saved features to {output_dir}')
+
+
+def _extract_eig(
+    inp: Tuple[int, str], 
+    K: int, 
+    images_root: str,
+    output_dir: str,
+    which_matrix: str = 'laplacian'
+):
+    index, features_file = inp
+
+    # Load 
+    data_dict = torch.load(features_file, map_location='cpu')
+    image_id = data_dict['file'][:-4]
+    
+    # Load
+    output_file = str(Path(output_dir) / f'{image_id}.pth')
+    if Path(output_file).is_file():
+        return  # skip because already generated
+
+    # Load affinity matrix
+    k_feats = data_dict['k'].squeeze()
+    A = k_feats @ k_feats.T
+
+    # Eigenvectors of affinity matrix
+    if which_matrix == 'affinity_torch':
+        eigenvalues, eigenvectors = torch.eig(A, eigenvectors=True)
+    
+    # Eigenvectors of affinity matrix with scipy
+    elif which_matrix == 'affinity':
+        A = A.cpu().numpy()
+        eigenvalues, eigenvectors = eigsh(A, which='LM', k=K)
+        eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,))
+    
+    # Eigenvectors of laplacian matrix
+    elif which_matrix == 'laplacian':
+        A = A.cpu().numpy()
         _W_semantic = (A * (A > 0))
         _W_semantic = _W_semantic / _W_semantic.max()
         diag = _W_semantic @ np.ones(_W_semantic.shape[0])
@@ -214,212 +151,101 @@ def _create_object_segment(
             eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, sigma=0, which='LM', M=D)
         except:
             eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, which='SM', M=D)
-        eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors).float()
+        eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
 
-        # CRF
-        new_data_dict = defaultdict(list)
-        for k in range(K):
-            eigenvalue = eigenvalues[k]
-            eigenvector = eigenvectors[:, k]
+    # Sign ambiguity
+    for k in range(eigenvectors.shape[1]):
+        if 0.5 < torch.mean((eigenvectors[:, k]).float()).item() < 1.0:  # reverse segment
+            eigenvectors[:, k] = 0 - eigenvectors[:, k]
 
-            ############# Segments ############
-            eigensegment = eigenvector.clone()
-            if 0.5 < torch.mean((eigensegment > threshold).float()).item() < 1.0:  # reverse segment
-                eigensegment = 0 - eigensegment
-            # Do CRF on high-resolution features
-            U = F.interpolate(
-                eigensegment.reshape(1, 1, H_patch, W_patch), 
-                size=(H_pad, W_pad), mode='bilinear', align_corners=False
-            ).squeeze()
-            U = (U - U.min()) / (U.max() - U.min())
-            U = torch.stack((1 - U, U), dim=-1)
-            eigensegment = denseCRF.densecrf(img_np, U.numpy(), crf_params)
-            eigensegment = torch.from_numpy(eigensegment)
-            # Get feature
-            pooled_feature = (eigensegment.unsqueeze(0) * features).mean(dim=(1,2))
-
-            ############# Objects #############
-            # Get segment
-            object_segment = (eigenvector > threshold).float()
-            if 0.5 < torch.mean(object_segment).item() < 1.0:  # reverse segment
-                object_segment = (1 - object_segment)
-            # Do CRF with unary potentials U
-            U = F.interpolate(
-                object_segment.reshape(1, 1, H_patch, W_patch), 
-                size=(H_pad, W_pad), mode='bilinear', align_corners=False
-            ).squeeze()
-            U = torch.stack((1 - U, U), dim=-1)
-            object_segment = denseCRF.densecrf(img_np, U.numpy(), crf_params)
-            # In case there is no object
-            if np.sum(np.abs(object_segment)) == 0:
-                object_segment = 1 - object_segment
-            # Get largest connected component
-            object_segment = get_largest_cc(object_segment)
-            object_segment = torch.from_numpy(object_segment)
-            # Get and pool features
-            object_pooled_feature = (object_segment.unsqueeze(0) * features).mean(dim=(1,2))
-
-            ############# Output #############
-            new_data_dict['eigenvalues'].append(eigenvalue)
-            new_data_dict['eigenvectors'].append(eigenvector)
-            new_data_dict['eigensegments'].append(eigensegment)
-            new_data_dict['pooled_features'].append(pooled_feature)
-            new_data_dict['eigensegments_object'].append(object_segment)
-            new_data_dict['pooled_features_object'].append(object_pooled_feature)
-        new_data_dict['eigenvalues'] = torch.stack(new_data_dict['eigenvalues'])
-        new_data_dict['eigenvectors'] = torch.stack(new_data_dict['eigenvectors'])
-        new_data_dict['eigensegments'] = torch.stack(new_data_dict['eigensegments'])
-        new_data_dict['pooled_features'] = torch.stack(new_data_dict['pooled_features'])
-        new_data_dict['eigensegments_object'] = torch.stack(new_data_dict['eigensegments_object'])
-        new_data_dict['pooled_features_object'] = torch.stack(new_data_dict['pooled_features_object'])
-        new_data_dict['file'] = data_dict['file']
-        new_data_dict['id'] = data_dict.get('id', image_id)
-        new_data_dict = dict(new_data_dict)
-        # Save dict
-        torch.save(new_data_dict, output_file)
-
-    # except Exception as e:
-    #     if isinstance(e, KeyboardInterrupt):
-    #         import sys
-    #         sys.exit()
-    #     print(f'Problem with {index=}')
+    # Save dict
+    output_dict = {'eigenvalues': eigenvalues, 'eigenvectors': eigenvectors}
+    torch.save(output_dict, output_file)
 
 
-def create_segments(
-    prefix: str,
-    features_root: str = './features',
-    output_dir: str = './eigensegments',
+def extract_eigs(
+    images_root: str,
+    features_dir: str,
+    output_dir: str,
     K: int = 5, 
     threshold: float = 0.0, 
     multiprocessing: int = 0
 ):
     """
     Example:
-    python extract-segments.py create_segments \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features \
-        --output_dir ./eigensegments \
+    python extract.py extract_eigs \
+        --images_root "./data/VOC2012/images" \
+        --features_dir "./data/VOC2012/features" \
+        --output_dir "./data/VOC2012/eigs" \
     """
-    fn = partial(_create_object_segment, K=K, threshold=threshold, crf_params=CRF_PARAMS, prefix=prefix, output_dir=output_dir)
-    inputs = list(enumerate(sorted(Path(features_root).iterdir())))  # inputs are (index, files) tuples
-    _parallel_process(inputs, fn, multiprocessing)
+    fn = partial(_extract_eig, K=K, images_root=images_root, output_dir=output_dir)
+    inputs = list(enumerate(sorted(Path(features_dir).iterdir())))  # inputs are (index, files) tuples
+    utils.parallel_process(inputs, fn, multiprocessing)
 
 
-def _create_object_matte(
-    inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16
+def _extract_multi_region_segmentation(
+    inp: Tuple[int, Tuple[str, str]], 
+    adaptive: bool, 
+    adaptive_eigenvalue_threshold: float, 
+    non_adaptive_num_segments: int,
 ):
-    from pymatting import estimate_alpha_cf, stack_images
+    index, (feature_path, eigs_path) = inp
 
     # Load 
-    index, (feature_path, segment_path) = inp
-    index, path = inp
-    try:
-        data_dict = torch.load(feature_path, map_location='cpu')
-        data_dict.update(torch.load(segment_path, map_location='cpu'))
-    except:
-        print(f'Problem with index: {index}')
-        return
+    data_dict = torch.load(feature_path, map_location='cpu')
+    data_dict.update(torch.load(eigs_path, map_location='cpu'))
 
     # Output file
     id = Path(data_dict['file']).stem
-    output_file = str(Path(output_dir) / f'{prefix}-matte-{id}.png')
+    output_file = str(Path(output_dir) / f'{id}.png')
     if Path(output_file).is_file():
         return  # skip because already generated
 
     # Sizes
-    image = _inverse_transform(data_dict['images_resized'].squeeze(0))
-    img_np = np.array(image) / 255
-    H, W = img_np.shape[:2]
-    H_, W_ = (H // patch_size, W // patch_size)
+    B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
+    
+    # If adaptive, we use adaptive_eigenvalue_threshold and the eigenvalues to get an
+    # adaptive number of segments per image. If not, we use non_adaptive_num_segments 
+    # to get a fixed number of segments per image.
+    if adaptive: 
+        raise NotImplementedError()
+    else:
+        n_clusters = non_adaptive_num_segments
 
     # Eigenvector
-    eigenvector = data_dict['eigenvectors'][1].reshape(H_,W_)
-    eigenvector = resize(eigenvector, output_shape=(H, W))  # upscale
-    object_segment = (eigenvector > 0).astype(float)
-    if 0.5 < np.mean(object_segment).item() < 1.0:  # reverse segment
-        object_segment = (1 - object_segment)
-    object_segment = get_largest_cc(object_segment)
-    trimap = trimap_from_mask(object_segment, r=r)
-    alpha = estimate_alpha_cf(img_np, trimap)
-    rgba = stack_images(img_np, alpha)
+    eigenvectors = data_dict['eigenvectors'][1:].numpy()  # take non-constant eigenvectors
+    kmeans = KMeans(n_clusters=n_clusters)
+    clusters = kmeans.fit_predict(eigenvectors.T)
+    clusters = clusters.reshape(H_patch, W_patch)
 
     # Save dict
-    # torch.save(rgba, output_file)
-    Image.fromarray((rgba * 255).astype(np.uint8)).save(output_file)
+    Image.fromarray(clusters).convert('L').save(output_file)
 
 
-def create_object_mattes(
-    prefix: str,
-    features_root: str = './features_VOC2012',
-    segments_root: str = './eigensegments_VOC2012',
-    output_dir: str = './mattes_VOC2012',
-    r: int = 15,
+def extract_multi_region_segmentation(
+    features_dir: str,
+    eigs_dir: str,
+    output_dir: str,
+    adaptive: bool = False,
+    adaptive_eigenvalue_threshold: float = 0.9,
+    non_adaptive_num_segments: int = 4,
     multiprocessing: int = 0
 ):
     """
     Example:
-    python extract-segments.py create_object_mattes \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features_VOC2012 \
-        --segments_root ./eigensegments_VOC2012 \
-        --output_dir ./mattes_VOC2012 \
+    python extract.py extract_single_region_segmentation \
+        --features_dir "./data/VOC2012/features" \
+        --eigs_dir "./data/VOC2012/eigs" \
+
     """
-    fn = partial(_create_object_matte, r=r, prefix=prefix, output_dir=output_dir)
-    inputs = _get_feature_and_segment_inputs(features_root=features_root, segments_root=segments_root)
-    _parallel_process(inputs, fn, multiprocessing)
+    fn = partial(_extract_multi_region_segmentation, adaptive=adaptive, 
+                 adaptive_eigenvalue_threshold=adaptive_eigenvalue_threshold, 
+                 non_adaptive_num_segments=non_adaptive_num_segments, output_dir=output_dir)
+    inputs = utils.get_paired_input_files(features_dir, eigs_dir)
+    utils.parallel_process(inputs, fn, multiprocessing)
 
 
-def _create_object_mask(
-    inp: Tuple[int, Tuple[str, str]], r: int, prefix: str, output_dir: str, patch_size: int = 16
-):
-    index, (feature_path, segment_path) = inp
-    try:
-
-        # Load 
-        data_dict = torch.load(feature_path, map_location='cpu')
-        data_dict.update(torch.load(segment_path, map_location='cpu'))
-
-        # Output file
-        id = Path(data_dict['file']).stem
-        output_file = str(Path(output_dir) / f'{prefix}-mask-{id}.png')
-        # if Path(output_file).is_file():
-        #     return  # skip because already generated
-
-        # Eigenvector
-        eigensegment = data_dict['eigensegments_object'][1].numpy()  # get the 2nd smallest eigenvector
-        resized_eigensegment = resize(eigensegment, output_shape=data_dict['shape'][-2:])
-        resized_eigensegment[:eigensegment.shape[0], :eigensegment.shape[1]] = eigensegment
-
-        # Save dict
-        Image.fromarray((eigensegment * 255).astype(np.uint8)).save(output_file)
-
-    except:
-        print(f'Problem with index: {index}')
-        return
-
-
-def create_object_masks(
-    prefix: str,
-    features_root: str = './features_VOC2012',
-    segments_root: str = './eigensegments_VOC2012',
-    output_dir: str = './mattes_VOC2012',
-    r: int = 15,
-    multiprocessing: int = 0
-):
-    """
-    Example:
-    python extract-segments.py create_object_masks \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features_VOC2012 \
-        --segments_root ./eigensegments_VOC2012 \
-        --output_dir ./masks_VOC2012 \
-    """
-    fn = partial(_create_object_mask, r=r, prefix=prefix, output_dir=output_dir)
-    inputs = _get_feature_and_segment_inputs(features_root=features_root, segments_root=segments_root)
-    _parallel_process(inputs, fn, multiprocessing)
-
-
-def _create_multilabel_mask(
+def _extract_multilabel_mask(
     inp: Tuple[int, Tuple[str, str]], 
     adaptive: bool, 
     adaptive_eigenvalue_threshold: float, 
@@ -466,7 +292,7 @@ def _create_multilabel_mask(
     #     return
 
 
-def create_multilabel_masks(
+def extract_multilabel_masks(
     prefix: str,
     features_root: str = './features_VOC2012',
     segments_root: str = './eigensegments_VOC2012',
@@ -478,19 +304,19 @@ def create_multilabel_masks(
 ):
     """
     Example:
-    python extract-segments.py create_multilabel_masks \
+    python extract.py extract_multilabel_masks \
         --prefix VOC2012-dino_vits16 \
         --features_root ./features_VOC2012 \
         --segments_root ./eigensegments_VOC2012 \
         --output_dir ./multilabel_masks_VOC2012 \
     """
-    fn = partial(_create_multilabel_mask, adaptive=adaptive, adaptive_eigenvalue_threshold=adaptive_eigenvalue_threshold, 
+    fn = partial(_extract_multilabel_mask, adaptive=adaptive, adaptive_eigenvalue_threshold=adaptive_eigenvalue_threshold, 
                  non_adaptive_num_segments=non_adaptive_num_segments, prefix=prefix, output_dir=output_dir)
     inputs = _get_feature_and_segment_inputs(features_root=features_root, segments_root=segments_root)
     _parallel_process(inputs, fn, multiprocessing)
 
 
-def create_semantic_segmentations(
+def extract_semantic_segmentations(
     prefix: str,
     features_root: str = './multilabel_masks_VOC2012',
     multilabel_masks_root: str = './multilabel_masks_VOC2012',
@@ -502,7 +328,7 @@ def create_semantic_segmentations(
 ):
     """
     Example:
-    python extract-segments.py create_semantic_segmentations \
+    python extract.py extract_semantic_segmentations \
         --prefix VOC2012-dino_vits16 \
         --features_root ./features_VOC2012 \
         --multilabel_masks_root ./multilabel_masks_VOC2012 \
@@ -688,7 +514,7 @@ def create_semantic_segmentations(
     print('Done')
 
 
-def _create_crf_semantic_segmentations(
+def _extract_crf_semantic_segmentations(
     inp: Tuple[int, Tuple[str, str]], 
     crf_params: Tuple, num_clusters: int,
     prefix: str, output_dir: str,
@@ -734,7 +560,7 @@ def _create_crf_semantic_segmentations(
     #     return
 
 
-def create_crf_semantic_segmentations(
+def extract_crf_semantic_segmentations(
     prefix: str, 
     features_root: str = './features_VOC2012',
     semantic_segmentations_root: str = './semantic_segmentations_VOC2012',
@@ -751,14 +577,14 @@ def create_crf_semantic_segmentations(
 ):
     """
     Example:
-    python extract-segments.py create_crf_semantic_segmentations \
+    python extract.py extract_crf_semantic_segmentations \
         --prefix VOC2012-dino_vits16 \
         --features_root ./features_VOC2012 \
         --semantic_segmentations_root ./semantic_segmentations_VOC2012 \
         --output_dir ./crf_semantic_segmentations_VOC2012 \
     """
     crf_params = (w1, alpha, beta, w2, gamma, it)
-    fn = partial(_create_crf_semantic_segmentations, num_clusters=num_clusters, crf_params=crf_params, prefix=prefix, output_dir=output_dir)
+    fn = partial(_extract_crf_semantic_segmentations, num_clusters=num_clusters, crf_params=crf_params, prefix=prefix, output_dir=output_dir)
     inputs = _get_feature_and_segment_inputs(features_root=features_root, segments_root=semantic_segmentations_root, segments_name='mask', ext='.png')
     _parallel_process(inputs, fn, multiprocessing)
 
@@ -868,12 +694,14 @@ def vis_semantic_segmentations(
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
     fire.Fire(dict(
-        create_segments=create_segments, 
-        create_object_mattes=create_object_mattes,
-        create_object_masks=create_object_masks,
-        create_multilabel_masks=create_multilabel_masks,
-        create_semantic_segmentations=create_semantic_segmentations,
-        create_crf_semantic_segmentations=create_crf_semantic_segmentations,
+        extract_features=extract_features,
+        extract_eigs=extract_eigs, 
+        extract_object_mattes=extract_object_mattes,
+        extract_object_masks=extract_object_masks,
+        extract_multilabel_masks=extract_multilabel_masks,
+        extract_semantic_segmentations=extract_semantic_segmentations,
+        extract_crf_semantic_segmentations=extract_crf_semantic_segmentations,
         vis_segments=vis_segments,
         vis_semantic_segmentations=vis_semantic_segmentations,
     ))
+

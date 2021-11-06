@@ -119,7 +119,7 @@ H_pad, W_pad = img_np.shape[:2]
 # Params
 ParamsCRF = namedtuple('ParamsCRF', 'w1 alpha beta w2 gamma it')
 CRF_PARAMS = ParamsCRF(
-    w1    = 20,     # weight of bilateral term  # 10.0,
+    w1    = 20,    # weight of bilateral term  # 10.0,
     alpha = 30,    # spatial std  # 80,  
     beta  = 13,    # rgb  std  # 13,  
     w2    = 5,     # weight of spatial term  # 3.0, 

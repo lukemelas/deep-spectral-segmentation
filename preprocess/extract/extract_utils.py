@@ -13,6 +13,8 @@ from typing import Callable, Iterable, List, Optional, Tuple, Union, Any
 from typing import Optional
 import cv2
 import numpy as np
+import sys
+import time
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -81,12 +83,29 @@ def load_single_image(path, transform):
     image = Image.open(path)
 
 
-def get_paired_input_files(dir1, dir2, desc=None):
-    files1 = sorted(Path(dir1).iterdir())
-    files2 = sorted(Path(dir2).iterdir())
+def _get_files(p):
+    if Path(p).is_dir():
+        return sorted(Path(p).iterdir())
+    elif Path(p).is_file():
+        return Path(p).read_text().splitlines()
+    else:
+        raise ValueError(p)
+        
+
+def get_paired_input_files(path1, path2):
+    files1 = _get_files(path1)
+    files2 = _get_files(path2)
     assert len(files1) == len(files2)
-    files1 = tqdm(files1, desc=desc)
     return list(enumerate(zip(files1, files2)))
+
+
+def make_output_dir(output_dir):
+    output_dir = Path(output_dir) 
+    output_dir.mkdir(exist_ok=True, parents=True)
+    if len(list(output_dir.iterdir())):
+        print(f'Output dir: {str(output_dir)}')
+        if input(f'Output dir already contains files. Continue? (y/n) >> ') != 'y':
+            sys.exit()  # skip because already generated
 
 
 def get_largest_cc(mask: np.array):
@@ -156,3 +175,16 @@ def get_border_fraction(segmap: np.array):
     indices = np.array(list(counts_map.keys()))
     normlized_counts = np.array(list(counts_map.values())) / num_border_pixels
     return indices, normlized_counts
+
+
+def parallel_process(inputs: Iterable, fn: Callable, multiprocessing: int = 0):
+    start = time.time()
+    if multiprocessing:
+        print('Starting multiprocessing')
+        with Pool(multiprocessing) as pool:
+            for _ in tqdm(pool.imap(fn, inputs), total=len(inputs)):
+                pass
+    else:
+        for inp in tqdm(inputs):
+            fn(inp)
+    print(f'Finished in {time.time() - start:.1f}s')

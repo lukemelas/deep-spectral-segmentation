@@ -181,7 +181,7 @@ def extract_eigs(
     utils.parallel_process(inputs, fn, multiprocessing)
 
 
-def _extract_multi_region_segmentation(
+def _extract_multi_region_segmentations(
     inp: Tuple[int, Tuple[str, str]], 
     adaptive: bool, 
     non_adaptive_num_segments: int,
@@ -233,26 +233,25 @@ def _extract_multi_region_segmentation(
     Image.fromarray(segmap).convert('L').save(output_file)
 
 
-def extract_multi_region_segmentation(
+def extract_multi_region_segmentations(
     features_dir: str,
     eigs_dir: str,
     output_dir: str,
     adaptive: bool = False,
-    adaptive_eigenvalue_threshold: float = 0.9,
     non_adaptive_num_segments: int = 4,
     multiprocessing: int = 0
 ):
     """
     Example:
-    python extract.py extract_multi_region_segmentation \
+    python extract.py extract_multi_region_segmentations \
         --features_dir "./data/VOC2012/features" \
         --eigs_dir "./data/VOC2012/eigs" \
         --output_dir "./data/VOC2012/multi_region_segmentation/fixed" \
     """
     print(f'Adaptive: {adaptive}')
-    fn = partial(_extract_multi_region_segmentation, adaptive=adaptive, 
+    fn = partial(_extract_multi_region_segmentations, adaptive=adaptive, 
                  non_adaptive_num_segments=non_adaptive_num_segments, output_dir=output_dir)
-    inputs = utils.get_paired_input_files(features_dir, eigs_dir, desc='Creating segmentations')
+    inputs = utils.get_paired_input_files(features_dir, eigs_dir)
     utils.parallel_process(inputs, fn, multiprocessing)
 
 
@@ -315,7 +314,7 @@ def extract_bboxes(
         --output_file "./data/VOC2012/multi_region_bboxes/fixed/bboxes_e2_d5.pth" \
     """
     fn = partial(_extract_bbox, num_erode=num_erode, num_dilate=num_dilate)
-    inputs = utils.get_paired_input_files(features_dir, segmentations_dir, desc='Processing segmentations')
+    inputs = utils.get_paired_input_files(features_dir, segmentations_dir)
     # utils.parallel_process(inputs, fn, multiprocessing)  # <-- if you want multiprocessing, but it's not necessary
     all_outputs = [fn(inp) for inp in inputs]
     torch.save(all_outputs, output_file)
@@ -516,13 +515,16 @@ def extract_semantic_segmentations(
         python extract.py extract_semantic_segmentations \
             --segmentations_dir "./data/VOC2012/multi_region_segmentation/fixed" \
             --bbox_clusters_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_clusters_e2_d5_pca_32.pth" \
-            --output_dir "./data/VOC2012/semantic_segmentations/fixed/segmaps_e2_d5_pca_32" \
+            --output_dir "./data/VOC2012/semantic_segmentations/patches/fixed/segmaps_e2_d5_pca_32" \
     """
 
     # Load bounding boxes
     bbox_list = torch.load(bbox_clusters_file)
     total_num_boxes = sum(len(d['bboxes']) for d in bbox_list)
     print(f'Loaded bounding box list. There are {total_num_boxes} total bounding boxes with features and clusters.')
+
+    # Output
+    utils.make_output_dir(output_dir)
 
     # Loop over boxes
     for bbox_dict in tqdm(bbox_list):
@@ -547,17 +549,88 @@ def extract_semantic_segmentations(
     print(f'Saved features to {output_dir}')
 
 
+# TODO: CRF semantic segmentation, evaluation, train DINO, look into CLIP
+
+def _extract_crf_segmentations(
+    inp: Tuple[int, Tuple[str, str]], 
+    images_root: str,
+    num_classes: int,
+    output_dir: str,
+    crf_params: Tuple,
+):
+    index, (image_file, segmap_path) = inp
+
+    # Output file
+    id = Path(image_file).stem
+    output_file = str(Path(output_dir) / f'{id}.png')
+    # if Path(output_file).is_file():
+    #     return  # skip because already generated
+
+    # Load image and segmap
+    image_file = str(Path(images_root) / f'{id}.jpg')
+    image = np.array(Image.open(image_file).convert('RGB'))  # (H_patch, W_patch, 3)
+    segmap = np.array(Image.open(segmap_path))  # (H_patch, W_patch)
+     
+    # Sizes
+    H, W = image.shape[:2]
+    H_patch, W_patch = H // 16, W // 16
+    H_pad, W_pad = H_patch * 16, W_patch * 16
+
+    # Resize and expand
+    segmap_upscaled = cv2.resize(segmap, dsize=(W_pad, H_pad), interpolation=cv2.INTER_NEAREST)  # (H_pad, W_pad)
+    segmap_orig_res = cv2.resize(segmap, dsize=(W, H), interpolation=cv2.INTER_NEAREST)  # (H, W)
+    segmap_orig_res[:H_pad, :W_pad] = segmap_upscaled  # replace with the correctly upscaled version, just in case they are different
+
+    # CRF
+    unary_potentials = F.one_hot(torch.from_numpy(segmap_orig_res).long(), num_classes=num_classes)
+    segmap_crf = denseCRF.densecrf(image, unary_potentials, crf_params)  # (H_pad, W_pad)
+
+    # Save
+    Image.fromarray(segmap_crf).convert('L').save(output_file)
+
+
+def extract_crf_segmentations(
+    images_list: str,
+    images_root: str,
+    segmentations_dir: str,
+    output_dir: str,
+    num_classes: int = 21,
+    multiprocessing: int = 0,
+    # CRF parameters
+    w1    = 20,    # weight of bilateral term  # 10.0,
+    alpha = 30,    # spatial std  # 80,  
+    beta  = 13,    # rgb  std  # 13,  
+    w2    = 5,     # weight of spatial term  # 3.0, 
+    gamma = 3,     # spatial std  # 3,   
+    it    = 5.0,   # iteration  # 5.0, 
+):
+    """
+    Example:
+    python extract.py extract_crf_segmentations \
+        --images_list "./data/VOC2012/lists/images.txt" \
+        --images_root "./data/VOC2012/images" \
+        --segmentations_dir "./data/VOC2012/semantic_segmentations/patches/fixed/segmaps_e2_d5_pca_32" \
+        --output_dir "./data/VOC2012/semantic_segmentations/crf/fixed/segmaps_e2_d5_pca_32" \
+    """
+    utils.make_output_dir(output_dir)
+    fn = partial(_extract_crf_segmentations, images_root=images_root, num_classes=num_classes, output_dir=output_dir,
+                 crf_params=(w1, alpha, beta, w2, gamma, it))
+    inputs = utils.get_paired_input_files(images_list, segmentations_dir)
+    print(f'Found {len(inputs)} images and segmaps')
+    utils.parallel_process(inputs, fn, multiprocessing)
+
+
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
     fire.Fire(dict(
         extract_features=extract_features,  # step 1
         extract_eigs=extract_eigs,  # step 2
-        extract_multi_region_segmentation=extract_multi_region_segmentation,  # step 3
+        extract_multi_region_segmentations=extract_multi_region_segmentations,  # step 3
         extract_bboxes=extract_bboxes,  # step 4
         extract_bbox_features=extract_bbox_features,  # step 5
         extract_bbox_clusters=extract_bbox_clusters,  # step 6
         extract_semantic_segmentations=extract_semantic_segmentations,  # step 7
-        # extract_crf_segmentation_clusters=extract_crf_segmentation_clusters,  # step 8
+        extract_crf_segmentations=extract_crf_segmentations,  # step 8
         vis_segmentations=vis_segmentations,
     ))
 

@@ -23,12 +23,9 @@ import time
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from sklearn.decomposition import PCA
 from sklearn.cluster import MiniBatchKMeans
-try:
-    from sklearnex.cluster import KMeans, DBSCAN
-    print('Using sklearnex (accelerated sklearn)')
-except:
-    from sklearn.cluster import KMeans, DBSCAN
+from sklearn.cluster import KMeans, DBSCAN
 
 import extract_utils as utils
 
@@ -187,7 +184,6 @@ def extract_eigs(
 def _extract_multi_region_segmentation(
     inp: Tuple[int, Tuple[str, str]], 
     adaptive: bool, 
-    adaptive_eigenvalue_threshold: float, 
     non_adaptive_num_segments: int,
     output_dir: str,
 ):
@@ -206,11 +202,14 @@ def _extract_multi_region_segmentation(
     # Sizes
     B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
     
-    # If adaptive, we use adaptive_eigenvalue_threshold and the eigenvalues to get an
-    # adaptive number of segments per image. If not, we use non_adaptive_num_segments 
-    # to get a fixed number of segments per image.
+    # If adaptive, we use the gaps between eigenvalues to determine the number of 
+    # segments per image. If not, we use non_adaptive_num_segments to get a fixed
+    # number of segments per image.
     if adaptive:
-        raise NotImplementedError()
+        indices_by_gap = np.argsort(np.diff(data_dict['eigenvalues'].numpy()))[::-1]
+        index_largest_gap = indices_by_gap[indices_by_gap != 0][0]  # remove zero and take the biggest
+        n_clusters = index_largest_gap + 1
+        # print(f'Number of clusters: {n_clusters}')
     else:
         n_clusters = non_adaptive_num_segments
 
@@ -248,10 +247,10 @@ def extract_multi_region_segmentation(
     python extract.py extract_multi_region_segmentation \
         --features_dir "./data/VOC2012/features" \
         --eigs_dir "./data/VOC2012/eigs" \
-        --output_dir "./data/VOC2012/multi_region_segmentation" \
+        --output_dir "./data/VOC2012/multi_region_segmentation/fixed" \
     """
+    print(f'Adaptive: {adaptive}')
     fn = partial(_extract_multi_region_segmentation, adaptive=adaptive, 
-                 adaptive_eigenvalue_threshold=adaptive_eigenvalue_threshold, 
                  non_adaptive_num_segments=non_adaptive_num_segments, output_dir=output_dir)
     inputs = utils.get_paired_input_files(features_dir, eigs_dir, desc='Creating segmentations')
     utils.parallel_process(inputs, fn, multiprocessing)
@@ -311,9 +310,9 @@ def extract_bboxes(
     the entire output as a single JSON file. Example:
     python extract.py extract_bboxes \
         --features_dir "./data/VOC2012/features" \
-        --segmentations_dir "./data/VOC2012/multi_region_segmentation" \
+        --segmentations_dir "./data/VOC2012/multi_region_segmentation/fixed" \
         --num_erode 2 --num_dilate 5 \
-        --output_file "./data/VOC2012/multi_region_bboxes/bboxes_e2_d5.pth" \
+        --output_file "./data/VOC2012/multi_region_bboxes/fixed/bboxes_e2_d5.pth" \
     """
     fn = partial(_extract_bbox, num_erode=num_erode, num_dilate=num_dilate)
     inputs = utils.get_paired_input_files(features_dir, segmentations_dir, desc='Processing segmentations')
@@ -334,7 +333,7 @@ def vis_segmentations(
         streamlit run extract.py vis_segmentations -- \
             --images_list "./data/VOC2012/lists/images.txt" \
             --images_root "./data/VOC2012/images" \
-            --segmentations_root "./data/VOC2012/multi_region_segmentation"
+            --segmentations_root "./data/VOC2012/multi_region_segmentation/fixed"
     """
     # Streamlit setup
     from skimage.color import label2rgb
@@ -416,9 +415,9 @@ def extract_bbox_features(
         python extract.py extract_bbox_features \
             --model_name dino_vits16 \
             --images_root "./data/VOC2012/images" \
-            --bbox_file "./data/VOC2012/multi_region_bboxes/bboxes_e2_d5.pth" \
+            --bbox_file "./data/VOC2012/multi_region_bboxes/fixed/bboxes_e2_d5.pth" \
             --output_file "./data/VOC2012/features" \
-            --output_file "./data/VOC2012/multi_region_bboxes/bbox_features_e2_d5.pth" \
+            --output_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_features_e2_d5.pth" \
     """
 
     # Load bounding boxes
@@ -440,15 +439,112 @@ def extract_bbox_features(
         image_filename = str(Path(images_root) / f'{image_id}.jpg')
         image = val_transform(Image.open(image_filename).convert('RGB'))  # (3, H, W)
         image = image.unsqueeze(0).to('cuda')  # (1, 3, H, W)
+        features_crops = []
         for (xmin, ymin, xmax, ymax) in bboxes:
             image_crop = image[:, :, ymin:ymax, xmin:xmax]
-            feature_crop = model(image_crop)
-            bbox_dict['feature'] = feature_crop.squeeze().cpu()
+            features_crop = model(image_crop).squeeze().cpu()
+            features_crops.append(features_crop)
+        bbox_dict['features'] = torch.stack(features_crops, dim=0)
     
     # Save
     torch.save(bbox_list, output_file)
     print(f'Saved features to {output_file}')
 
+
+def extract_bbox_clusters(
+    bbox_features_file: str,
+    output_file: str,
+    num_clusters: int = 21, 
+    pca_dim: Optional[int] = 32,
+):
+    """
+    Example:
+        python extract.py extract_bbox_clusters \
+            --bbox_features_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_features_e2_d5.pth" \
+            --pca_dim 32 --num_clusters 20 \
+            --output_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_clusters_e2_d5_pca_32.pth" \
+    """
+
+    # Load bounding boxes
+    bbox_list = torch.load(bbox_features_file)
+    total_num_boxes = sum(len(d['bboxes']) for d in bbox_list)
+    print(f'Loaded bounding box list. There are {total_num_boxes} total bounding boxes with features.')
+
+    # Loop over boxes and stack features
+    all_features = []
+    for bbox_dict in tqdm(bbox_list, desc='Stacking features'):
+        for feat in bbox_dict['features'].numpy():
+            all_features.append(feat.squeeze())  # (D, )
+    all_features = np.stack(all_features, axis=0)  # (numBbox, D)
+
+    # Cluster: PCA
+    if pca_dim is not None:
+        pca = PCA(pca_dim)
+        print(f'Computing PCA with dimension {pca_dim}')
+        all_features = pca.fit_transform(all_features)
+
+    # Cluster: K-Means
+    print(f'Computing K-Means clustering with {num_clusters} clusters')
+    kmeans = MiniBatchKMeans(n_clusters=num_clusters, batch_size=4096, max_iter=1000)
+    clusters = kmeans.fit_predict(all_features)
+    
+    # Print 
+    _indices, _counts = np.unique(clusters, return_counts=True)
+    print(f'Cluster indices: {_indices.tolist()}')
+    print(f'Cluster counts: {_counts.tolist()}')
+
+    # Loop over boxes and add clusters
+    idx = 0
+    for bbox_dict in bbox_list:
+        num_bboxes = len(bbox_dict['bboxes'])
+        bbox_dict['features'] = bbox_dict['features'].squeeze()
+        bbox_dict['clusters'] = clusters[idx: idx + num_bboxes]
+        idx = idx + num_bboxes
+    
+    # Save
+    torch.save(bbox_list, output_file)
+    print(f'Saved features to {output_file}')
+
+
+def extract_semantic_segmentations(
+    segmentations_dir: str,
+    bbox_clusters_file: str,
+    output_dir: str,
+):
+    """
+    Example:
+        python extract.py extract_semantic_segmentations \
+            --segmentations_dir "./data/VOC2012/multi_region_segmentation/fixed" \
+            --bbox_clusters_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_clusters_e2_d5_pca_32.pth" \
+            --output_dir "./data/VOC2012/semantic_segmentations/fixed/segmaps_e2_d5_pca_32" \
+    """
+
+    # Load bounding boxes
+    bbox_list = torch.load(bbox_clusters_file)
+    total_num_boxes = sum(len(d['bboxes']) for d in bbox_list)
+    print(f'Loaded bounding box list. There are {total_num_boxes} total bounding boxes with features and clusters.')
+
+    # Loop over boxes
+    for bbox_dict in tqdm(bbox_list):
+        # Get image info
+        image_id = bbox_dict['id']
+        # Load segmentation as tensor
+        segmap_path = str(Path(segmentations_dir) / f'{image_id}.png')
+        segmap = np.array(Image.open(segmap_path))
+        # Semantic map
+        if not len(bbox_dict['segment_indices']) == len(bbox_dict['clusters'].tolist()):
+            import pdb
+            pdb.set_trace()
+        semantic_map = dict(zip(bbox_dict['segment_indices'], bbox_dict['clusters'].tolist()))
+        assert 0 not in semantic_map, semantic_map
+        semantic_map[0] = 0  # background region remains zero
+        # Perform mapping
+        semantic_segmap = np.vectorize(semantic_map.__getitem__)(segmap)
+        # Save
+        output_file = str(Path(output_dir) / f'{image_id}.png')
+        Image.fromarray(semantic_segmap.astype(np.uint8)).convert('L').save(output_file)
+    
+    print(f'Saved features to {output_dir}')
 
 
 if __name__ == '__main__':
@@ -459,7 +555,9 @@ if __name__ == '__main__':
         extract_multi_region_segmentation=extract_multi_region_segmentation,  # step 3
         extract_bboxes=extract_bboxes,  # step 4
         extract_bbox_features=extract_bbox_features,  # step 5
-        # extract_bbox_clusters=extract_bbox_clusters,  # step 6
+        extract_bbox_clusters=extract_bbox_clusters,  # step 6
+        extract_semantic_segmentations=extract_semantic_segmentations,  # step 7
+        # extract_crf_segmentation_clusters=extract_crf_segmentation_clusters,  # step 8
         vis_segmentations=vis_segmentations,
     ))
 

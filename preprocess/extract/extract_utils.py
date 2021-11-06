@@ -1,5 +1,4 @@
 from PIL import Image
-from accelerate import Accelerator
 from collections import defaultdict
 from functools import partial
 from multiprocessing import Pool
@@ -8,39 +7,16 @@ from scipy.sparse.linalg import eigsh
 from skimage.measure import label as measure_label
 from skimage.measure import perimeter as measure_perimeter
 from skimage.morphology import binary_erosion, binary_dilation
-from skimage.transform import resize
 from torchvision import transforms
 from tqdm import tqdm
 from typing import Callable, Iterable, List, Optional, Tuple, Union, Any
 from typing import Optional
 import cv2
-import denseCRF
-import fire
 import numpy as np
-import time
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
-from sklearn.cluster import MiniBatchKMeans
-try:
-    from sklearnex.cluster import KMeans, DBSCAN
-    print('Using sklearnex (accelerated sklearn)')
-except:
-    from sklearn.cluster import KMeans, DBSCAN
-
-
-# # Params
-# ParamsCRF = namedtuple('ParamsCRF', 'w1 alpha beta w2 gamma it')
-# CRF_PARAMS = ParamsCRF(
-#     w1    = 6,     # weight of bilateral term  # 10.0,
-#     alpha = 40,    # spatial std  # 80,  
-#     beta  = 13,    # rgb  std  # 13,  
-#     w2    = 3,     # weight of spatial term  # 3.0, 
-#     gamma = 3,     # spatial std  # 3,   
-#     it    = 5.0,   # iteration  # 5.0, 
-# )
 
 
 def get_model(name):
@@ -180,46 +156,3 @@ def get_border_fraction(segmap: np.array):
     indices = np.array(list(counts_map.keys()))
     normlized_counts = np.array(list(counts_map.values())) / num_border_pixels
     return indices, normlized_counts
-
-
-def get_border_background_heuristic(segmap: np.array, threshold: float = 0.60) -> Optional[int]:
-    indices, normlized_counts = get_border_fraction(segmap)
-    if np.max(normlized_counts) > threshold:
-        return indices[np.argmax(normlized_counts)].item()
-    return None
-
-
-def get_roundness_background_heuristic(mask: np.array, threshold: float = 0.05) -> bool:
-    return get_roundness(mask) < threshold  # returns False if the background is too round
-
-
-
-
-
-def get_feature_and_segment_inputs(features_root, segments_root, segments_name='eigensegments', ext='.pth') -> List[Tuple[int, Tuple[str, str]]]:
-    inputs = []  # inputs are (index, (feature_file, segment_file)) tuples
-    missing_files = 0
-    for p in tqdm(sorted(Path(features_root).iterdir()), desc='Loading file list'):
-        features_file = str(p)
-        segments_file = str(Path(segments_root) / p.name.replace('features', segments_name).replace('.pth', ext))
-        if Path(features_file).is_file() and Path(segments_file).is_file():
-            inputs.append((features_file, segments_file))
-        else:
-            missing_files += 1
-    print(f'Loaded {len(inputs)} files. There were {missing_files} missing files.' )
-    inputs = list(enumerate(inputs))
-    return inputs
-
-
-def parallel_process(inputs: Iterable, fn: Callable, multiprocessing: int = 0):
-    start = time.time()
-    if multiprocessing:
-        print('Starting multiprocessing')
-        with Pool(multiprocessing) as pool:
-            for _ in tqdm(pool.imap(fn, inputs), total=len(inputs)):
-                pass
-    else:
-        for inp in tqdm(inputs):
-            fn(inp)
-    print(f'Finished in {time.time() - start:.1f}s')
-

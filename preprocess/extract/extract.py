@@ -9,10 +9,13 @@ from skimage.measure import label as measure_label
 from skimage.measure import perimeter as measure_perimeter
 from skimage.morphology import binary_erosion, binary_dilation
 from skimage.transform import resize
+from torch.functional import _return_counts
 from torchvision import transforms
+from torchvision.utils import draw_bounding_boxes
 from tqdm import tqdm
 from typing import Callable, Iterable, List, Optional, Tuple, Union
 from typing import Optional
+import cv2
 import denseCRF
 import fire
 import numpy as np
@@ -30,13 +33,12 @@ except:
 import extract_utils as utils
 
 
-@torch.no_grad()
 def extract_features(
     images_list: str,
-    images_root: Optional[str] = None,
-    model_name: str = 'dino_vits16',
-    batch_size: int = 1024,
-    output_dir: str = './features',
+    images_root: Optional[str],
+    model_name: str,
+    batch_size: int,
+    output_dir: str,
 ):
     """
     Example:
@@ -88,8 +90,8 @@ def extract_features(
         # Reshape
         output_dict['out'] = out
         output_qkv = feat_out["qkv"].reshape(B, T, 3, num_heads, -1 // num_heads).permute(2, 0, 3, 1, 4)
-        output_dict['k'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
-        output_dict['q'] = output_qkv[1].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+        output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+        output_dict['k'] = output_qkv[1].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
         output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
         output_dict['indices'] = indices[0]
         output_dict['file'] = files[0]
@@ -167,8 +169,7 @@ def extract_eigs(
     images_root: str,
     features_dir: str,
     output_dir: str,
-    K: int = 5, 
-    threshold: float = 0.0, 
+    K: int = 5,
     multiprocessing: int = 0
 ):
     """
@@ -179,7 +180,7 @@ def extract_eigs(
         --output_dir "./data/VOC2012/eigs" \
     """
     fn = partial(_extract_eig, K=K, images_root=images_root, output_dir=output_dir)
-    inputs = list(enumerate(sorted(Path(features_dir).iterdir())))  # inputs are (index, files) tuples
+    inputs = list(enumerate(sorted(Path(features_dir).iterdir())))
     utils.parallel_process(inputs, fn, multiprocessing)
 
 
@@ -188,6 +189,7 @@ def _extract_multi_region_segmentation(
     adaptive: bool, 
     adaptive_eigenvalue_threshold: float, 
     non_adaptive_num_segments: int,
+    output_dir: str,
 ):
     index, (feature_path, eigs_path) = inp
 
@@ -196,10 +198,10 @@ def _extract_multi_region_segmentation(
     data_dict.update(torch.load(eigs_path, map_location='cpu'))
 
     # Output file
-    id = Path(data_dict['file']).stem
+    id = Path(data_dict['id'])
     output_file = str(Path(output_dir) / f'{id}.png')
-    if Path(output_file).is_file():
-        return  # skip because already generated
+    # if Path(output_file).is_file():
+    #     return  # skip because already generated
 
     # Sizes
     B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
@@ -207,7 +209,7 @@ def _extract_multi_region_segmentation(
     # If adaptive, we use adaptive_eigenvalue_threshold and the eigenvalues to get an
     # adaptive number of segments per image. If not, we use non_adaptive_num_segments 
     # to get a fixed number of segments per image.
-    if adaptive: 
+    if adaptive:
         raise NotImplementedError()
     else:
         n_clusters = non_adaptive_num_segments
@@ -216,10 +218,20 @@ def _extract_multi_region_segmentation(
     eigenvectors = data_dict['eigenvectors'][1:].numpy()  # take non-constant eigenvectors
     kmeans = KMeans(n_clusters=n_clusters)
     clusters = kmeans.fit_predict(eigenvectors.T)
-    clusters = clusters.reshape(H_patch, W_patch)
+    segmap = clusters.reshape(H_patch, W_patch)
+
+    # TODO: Improve this step in the pipeline.
+    # Background detection: we assume that the segment with the most border pixels is the 
+    # background region. We will always make this region equal 0. 
+    indices, normlized_counts = utils.get_border_fraction(segmap)
+    bg_index = indices[np.argmax(normlized_counts)].item()
+    bg_region = (segmap == bg_index)
+    zero_region = (segmap == 0)
+    segmap[bg_region] = 0
+    segmap[zero_region] = bg_index
 
     # Save dict
-    Image.fromarray(clusters).convert('L').save(output_file)
+    Image.fromarray(segmap).convert('L').save(output_file)
 
 
 def extract_multi_region_segmentation(
@@ -233,425 +245,96 @@ def extract_multi_region_segmentation(
 ):
     """
     Example:
-    python extract.py extract_single_region_segmentation \
+    python extract.py extract_multi_region_segmentation \
         --features_dir "./data/VOC2012/features" \
         --eigs_dir "./data/VOC2012/eigs" \
-
+        --output_dir "./data/VOC2012/multi_region_segmentation" \
     """
     fn = partial(_extract_multi_region_segmentation, adaptive=adaptive, 
                  adaptive_eigenvalue_threshold=adaptive_eigenvalue_threshold, 
                  non_adaptive_num_segments=non_adaptive_num_segments, output_dir=output_dir)
-    inputs = utils.get_paired_input_files(features_dir, eigs_dir)
+    inputs = utils.get_paired_input_files(features_dir, eigs_dir, desc='Creating segmentations')
     utils.parallel_process(inputs, fn, multiprocessing)
 
 
-def _extract_multilabel_mask(
-    inp: Tuple[int, Tuple[str, str]], 
-    adaptive: bool, 
-    adaptive_eigenvalue_threshold: float, 
-    non_adaptive_num_segments: int,
-    prefix: str, output_dir: str,
-    patch_size: int = 16
+def _extract_bbox(
+    inp: Tuple[str, str],
+    num_erode: int,
+    num_dilate: int,
 ):
-    index, (feature_path, segment_path) = inp
-    # try:
-    
+    index, (feature_path, segmentation_path) = inp
+
     # Load 
     data_dict = torch.load(feature_path, map_location='cpu')
-    data_dict.update(torch.load(segment_path, map_location='cpu'))
-
-    # Output file
-    id = Path(data_dict['file']).stem
-    output_file = str(Path(output_dir) / f'{prefix}-mask-{id}.png')
-    if Path(output_file).is_file():
-        return  # skip because already generated
+    segmap = np.array(Image.open(str(segmentation_path)))
+    image_id = data_dict['id']
 
     # Sizes
-    H_patch, W_patch = data_dict['shape'][-2] // patch_size, data_dict['shape'][-1] // patch_size 
-    H_pad, W_pad = H_patch * patch_size, W_patch * patch_size
+    B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
 
-    if adaptive: 
-        # use adaptive_eigenvalue_threshold and the eigenvalues to get an
-        # adaptive number of segments per image
-        raise NotImplementedError()
-    else:
-        # use non_adaptive_num_segments to get a fixed number of segments per image
-        n_clusters = non_adaptive_num_segments
-
-    # Eigenvector
-    eigenvectors = data_dict['eigenvectors'][1:].numpy()  # take non-constant eigenvectors
-    kmeans = KMeans(n_clusters=n_clusters)
-    clusters = kmeans.fit_predict(eigenvectors.T)
-    clusters = clusters.reshape(H_patch, W_patch)
-
-    # Save dict
-    Image.fromarray(clusters).convert('L').save(output_file)
-
-    # except:
-    #     print(f'Problem with index: {index}')
-    #     return
-
-
-def extract_multilabel_masks(
-    prefix: str,
-    features_root: str = './features_VOC2012',
-    segments_root: str = './eigensegments_VOC2012',
-    output_dir: str = './multilabel_masks_VOC2012',
-    adaptive: bool = False,
-    adaptive_eigenvalue_threshold: float = 0.9,
-    non_adaptive_num_segments: int = 4,
-    multiprocessing: int = 0
-):
-    """
-    Example:
-    python extract.py extract_multilabel_masks \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features_VOC2012 \
-        --segments_root ./eigensegments_VOC2012 \
-        --output_dir ./multilabel_masks_VOC2012 \
-    """
-    fn = partial(_extract_multilabel_mask, adaptive=adaptive, adaptive_eigenvalue_threshold=adaptive_eigenvalue_threshold, 
-                 non_adaptive_num_segments=non_adaptive_num_segments, prefix=prefix, output_dir=output_dir)
-    inputs = _get_feature_and_segment_inputs(features_root=features_root, segments_root=segments_root)
-    _parallel_process(inputs, fn, multiprocessing)
-
-
-def extract_semantic_segmentations(
-    prefix: str,
-    features_root: str = './multilabel_masks_VOC2012',
-    multilabel_masks_root: str = './multilabel_masks_VOC2012',
-    output_dir: str = './semantic_segmentations_VOC2012',
-    num_clusters_excluding_background: int = 20,
-    use_background_heuristic: bool = True,
-    border_background_heuristic_threshold: float = 0.60,
-    roundness_background_heuristic_threshold: float = 0.05,
-):
-    """
-    Example:
-    python extract.py extract_semantic_segmentations \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features_VOC2012 \
-        --multilabel_masks_root ./multilabel_masks_VOC2012 \
-        --output_dir ./semantic_segmentations_VOC2012 \
-    """
-    
-    # Load
-    feature_files = []
-    multilabel_mask_files = []
-    missing_files = 0
-    pbar = tqdm(list(enumerate(sorted(Path(features_root).iterdir()))), desc=f'Loading features ({missing_files} missing)')
-    for i, features_file in pbar:
-        segmap_file = Path(multilabel_masks_root) / features_file.name.replace('features', 'mask').replace('.pth', '.png')
-        if segmap_file.is_file():
-            feature_files.append(str(features_file))
-            multilabel_mask_files.append(str(segmap_file))
-        else:
-            missing_files += 1
-            pbar.set_description(f'Loading features ({missing_files} missing)')
-    print(f'Loaded {len(feature_files)} files. There were {missing_files} missing files.' )
-    
-    # Extract features
-    segmaps = []  # (N, )
-    image_ids = []  # (N, )
-    bg_indices = []  # (N, )
-    output_files = []  # (N, )
-    all_segment_indices = []  # list of length N of arrays of size (num_clusters, )
-    all_pooled_features = []  # list of length N of arrays of size (num_clusters, D)
-    # <start> just trying out some other features  ---  TODO: REMOVE
-    all_pooled_k_features = []
-    all_pooled_v_features = []
-    all_pooled_cls_features = []
-    # <end>
-    pbar = zip(tqdm(feature_files, desc='Loading and pooling features'), multilabel_mask_files)
-    for features_file, segmap_file in pbar:
-        data_dict = torch.load(str(features_file))
-        segmap = np.array(Image.open(segmap_file))
-        image_id = data_dict['id']
-
-        # Output file
-        output_file = str(Path(output_dir) / f'{prefix}-mask-{image_id}.png')
-        # if Path(output_file).is_file():
-        #     continue  # skip because already generated
-
-        # Find the background index, if one exists
-        bg_index = None
-        if use_background_heuristic:
-            maybe_bg_index = get_border_background_heuristic(segmap, border_background_heuristic_threshold)
-            if maybe_bg_index is not None:
-                if get_roundness_background_heuristic((segmap == bg_index), roundness_background_heuristic_threshold):
-                    bg_index = maybe_bg_index
-
-        # Resize features
-        H_pad, W_pad = data_dict['images_resized'].shape[-2:]
-        H_patch, W_patch = H_pad // 16, W_pad // 16
-        assert (len(data_dict['out'][0].shape) == 3) and (data_dict['out'][0].shape[0] == 1) and (data_dict['out'][0].shape[1] == H_patch * W_patch + 1)
-        features = data_dict['out'][0][0, 1:].reshape(H_patch, W_patch, data_dict['out'][0].shape[-1])  # (H_patch, W_patch, D)
-        assert features.shape[:2] == segmap.shape
-        segmap = segmap[..., None]  # (H_patch, H_patch, 1)
-
-        # <start> just trying out some other features  ---  TODO: REMOVE
-        k_features = data_dict['k'].reshape(H_patch, W_patch, data_dict['k'].shape[-1])  # (H_patch, W_patch, D)
-        v_features = data_dict['v'].reshape(H_patch, W_patch, data_dict['v'].shape[-1])  # (H_patch, W_patch, D)
-        cls_features = data_dict['out'][0][0, 0].reshape(data_dict['v'].shape[-1])  # (D, )
-        image_pooled_k_features = []
-        image_pooled_v_features = []
-        image_pooled_cls_features = []
-        # <end>
-
-        # Loop over features
-        image_segment_indices = []  # (num_clusters,)
-        image_pooled_features = []  # (num_clusters, D)
-        for index in np.unique(segmap):
-            if index != bg_index:
-                binary_mask = erode_or_dilate_mask(segmap == index, r=30, erode=False)  # sanity check
-                segment_pooled_features = torch.mean(features * binary_mask, dim=(0, 1))
-                image_segment_indices.append(index)
-                image_pooled_features.append(segment_pooled_features)  # (D, )
-                
-                # <start> just trying out some other features  ---  TODO: REMOVE
-                segment_pooled_k_features = torch.mean(k_features * binary_mask, dim=(0, 1))
-                segment_pooled_v_features = torch.mean(v_features * binary_mask, dim=(0, 1))
-                segment_pooled_v_features = torch.mean(v_features * binary_mask, dim=(0, 1))
-                image_pooled_k_features.append(segment_pooled_k_features)  # (D, )
-                image_pooled_v_features.append(segment_pooled_v_features)  # (D, )
-                image_pooled_cls_features.append(cls_features)  # (D, )
-                # <end>
+    # Get bounding boxes
+    outputs = {'bboxes': [], 'bboxes_original_resolution': [], 'segment_indices': [], 'id': image_id, 
+               'format': "(xmin, ymin, xmax, ymax)"}
+    for segment_index in sorted(np.unique(segmap).tolist()):
+        if segment_index > 0:  # skip 0, because 0 is the background
             
-        # Append
-        segmaps.append(segmap)
-        image_ids.append(image_id)
-        bg_indices.append(bg_index)
-        output_files.append(output_file)
-        all_pooled_features.append(image_pooled_features)
-        all_segment_indices.append(image_segment_indices)
+            # Erode and dilate mask
+            binary_mask = (segmap == segment_index)
+            binary_mask = utils.erode_or_dilate_mask(binary_mask, r=num_erode, erode=True)
+            binary_mask = utils.erode_or_dilate_mask(binary_mask, r=num_dilate, erode=False)
 
-        # <start> just trying out some other features  ---  TODO: REMOVE
-        all_pooled_k_features.append(image_pooled_k_features)
-        all_pooled_v_features.append(image_pooled_v_features)
-        all_pooled_cls_features.append(image_pooled_cls_features)
-        # <end>
-        
-    # Stack
-    all_pooled_features_flat = torch.stack([feat for image_pooled_features in all_pooled_features for feat in image_pooled_features], dim=0).numpy()
+            # Find box
+            mask = np.where(binary_mask == 1)
+            ymin, ymax = min(mask[0]), max(mask[0]) + 1  # add +1 because excluded max
+            xmin, xmax = min(mask[1]), max(mask[1]) + 1  # add +1 because excluded max
+            bbox = [xmin, ymin, xmax, ymax]
+            bbox_resized = [x * P for x in bbox]  # rescale to image size
+            bbox_features = [ymin, xmin, ymax, xmax]  # feature space coordinates are different
 
-    # <start> just trying out some other features  ---  TODO: REMOVE
-    all_pooled_k_features_flat = torch.stack([feat for image_pooled_k_features in all_pooled_k_features for feat in image_pooled_k_features], dim=0).numpy()
-    all_pooled_v_features_flat = torch.stack([feat for image_pooled_v_features in all_pooled_v_features for feat in image_pooled_v_features], dim=0).numpy()
-    all_pooled_cls_features_flat = torch.stack([feat for image_pooled_cls_features in all_pooled_cls_features for feat in image_pooled_cls_features], dim=0).numpy()
-    # <end>
-
-    torch.save(dict(
-        segmaps=segmaps, image_ids=image_ids, bg_indices=bg_indices, all_segment_indices=all_segment_indices, 
-        all_pooled_features_flat=all_pooled_k_features_flat,
-        all_pooled_k_features_flat=all_pooled_k_features_flat, 
-        all_pooled_v_features_flat=all_pooled_v_features_flat,
-        all_pooled_cls_features_flat=all_pooled_cls_features_flat,
-    ), 'tmp/tmp_features.pth')
-    return
+            # Append
+            outputs['segment_indices'].append(segment_index)
+            outputs['bboxes'].append(bbox)
+            outputs['bboxes_original_resolution'].append(bbox_resized)
     
-    # # PCA
-    # from sklearn.decomposition import PCA
-    # pca = PCA(n_components=32, whiten=True)
-    # all_pooled_features_flat = pca.fit_transform(all_pooled_features_flat)
+    return outputs
 
-    # # Kmeans
-    # n_clusters = num_clusters_excluding_background + (0 if use_background_heuristic else 1)
-    # kmeans = MiniBatchKMeans(n_clusters=n_clusters)  # KMeans(n_clusters=n_clusters)
-    # print(f'Starting KMeans. Features shape: {all_pooled_features_flat.shape}')
-    # clusters = kmeans.fit_predict(all_pooled_features_flat)
-    # if use_background_heuristic:
-    #     clusters = clusters + 1 # increment all cluster indices because the background is 0
-    # print(f'Completed KMeans. Clusters shape: {clusters.shape}')
-    # print(f'Cluster counts: {np.unique(clusters, return_counts=True)[1]}')
 
-    # Kmeans
-    n_clusters = num_clusters_excluding_background + (0 if use_background_heuristic else 1)
-    kmeans = MiniBatchKMeans(n_clusters=n_clusters)  # KMeans(n_clusters=n_clusters)
-    print(f'Starting KMeans. Features shape: {all_pooled_features_flat.shape}')
-    clusters = kmeans.fit_predict(all_pooled_features_flat)
-    if use_background_heuristic:
-        clusters = clusters + 1 # increment all cluster indices because the background is 0
-    print(f'Completed KMeans. Clusters shape: {clusters.shape}')
-    print(f'Cluster counts: {np.unique(clusters, return_counts=True)[1]}')
-
-    # Save new segments
-    index = 0  # to keep track of where we are in the flat clusters array
-    pbar = enumerate(zip(tqdm(segmaps, desc='Mapping and saving segments'), image_ids, bg_indices, output_files, all_segment_indices))
-    for i, (segmap, image_id, bg_index, output_file, image_segment_indices) in pbar:
-
-        # Load the correct clusters
-        image_clusters = clusters[index: index + len(image_segment_indices)]
-        index += len(image_segment_indices)
-
-        # Construct the semantic map, a map that goes from segment 
-        # index (image-level) to cluster index (dataset-level)
-        image_semantic_map = {}
-        for segment_index, cluster_index in zip(image_segment_indices, image_clusters):
-            image_semantic_map[segment_index] = cluster_index
-        if bg_index is not None:
-            image_semantic_map[bg_index] = 0
-
-        # Reshape and check shapes
-        segmap = segmap.squeeze(-1)
-        _segmap_indices = set(np.unique(segmap).tolist())
-        _image_semantic_map_indices = set(list(image_semantic_map.keys()))
-        if not (_segmap_indices == _image_semantic_map_indices):
-            import pdb
-            pdb.set_trace()
-        assert _segmap_indices == _image_semantic_map_indices, f'{_segmap_indices=} != {_image_semantic_map_indices=}'
-        assert len(segmap.shape) == 2  # (H_patch, W_patch)
-        assert cluster_index.min() >= 0  # just a check
-        assert cluster_index.max() <= 255  # you'll have to save this as a non-grayscale uint8 image 
-
-        # Apply the semantic map
-        semantic_segmap = np.vectorize(image_semantic_map.get)(segmap)
-
-        # Save output image
-        Image.fromarray(semantic_segmap.astype(np.uint8)).convert('L').save(output_file)
-    
-    # Check
-    assert index == len(clusters), f'{index=} but {len(clusters)=}'
+def extract_bboxes(
+    features_dir: str,
+    segmentations_dir: str,
+    output_file: str,
+    num_erode: int = 2,
+    num_dilate: int = 3,
+):
+    """
+    Note: There is no need for multiprocessing here, as it is more convenient to save 
+    the entire output as a single JSON file. Example:
+    python extract.py extract_bboxes \
+        --features_dir "./data/VOC2012/features" \
+        --segmentations_dir "./data/VOC2012/multi_region_segmentation" \
+        --num_erode 2 --num_dilate 5 \
+        --output_file "./data/VOC2012/multi_region_bboxes/bboxes_e2_d5.pth" \
+    """
+    fn = partial(_extract_bbox, num_erode=num_erode, num_dilate=num_dilate)
+    inputs = utils.get_paired_input_files(features_dir, segmentations_dir, desc='Processing segmentations')
+    # utils.parallel_process(inputs, fn, multiprocessing)  # <-- if you want multiprocessing, but it's not necessary
+    all_outputs = [fn(inp) for inp in inputs]
+    torch.save(all_outputs, output_file)
     print('Done')
 
 
-def _extract_crf_semantic_segmentations(
-    inp: Tuple[int, Tuple[str, str]], 
-    crf_params: Tuple, num_clusters: int,
-    prefix: str, output_dir: str,
-    patch_size: int = 16
-):
-    index, (feature_path, semantic_segmap_file) = inp
-    # try:
-    
-    # Load 
-    data_dict = torch.load(feature_path, map_location='cpu')
-    semantic_segmap = np.array(Image.open(semantic_segmap_file))
-
-    # Sizes
-    H, W = data_dict['shape'][-2], data_dict['shape'][-1] 
-    H_patch, W_patch = H // patch_size, W // patch_size 
-    H_pad, W_pad = H_patch * patch_size, W_patch * patch_size
-
-    # Output file
-    id = Path(data_dict['file']).stem
-    output_file = str(Path(output_dir) / f'{prefix}-mask-{id}.png')
-    # if Path(output_file).is_file():
-    #     return  # skip because already generated
-
-    # Load image
-    image = _inverse_transform(data_dict['images_resized'].squeeze(0))
-    img_np = np.array(image)
-    
-    # CRF
-    semantic_segmap = torch.from_numpy(semantic_segmap).reshape(1, 1, H_patch, W_patch).to(torch.uint8)
-    U = F.interpolate(semantic_segmap, size=(H_pad, W_pad), mode='nearest').squeeze()
-    U = F.one_hot(U.long(), num_classes=num_clusters)
-    semantic_segmap = denseCRF.densecrf(img_np, U, crf_params)
-
-    # Eigenvector
-    resized_semantic_segmap = resize(semantic_segmap, output_shape=(H, W))
-    resized_semantic_segmap[:H_pad, :W_pad] = semantic_segmap
-
-    # Save dict
-    Image.fromarray(resized_semantic_segmap).convert('L').save(output_file)
-
-    # except:
-    #     print(f'Problem with index: {index}')
-    #     return
-
-
-def extract_crf_semantic_segmentations(
-    prefix: str, 
-    features_root: str = './features_VOC2012',
-    semantic_segmentations_root: str = './semantic_segmentations_VOC2012',
-    output_dir: str = './crf_semantic_segmentations_VOC2012',
-    num_clusters: int = 21,
-    multiprocessing: int = 0,
-    # below: CRF parameters
-    w1    = 20,     # weight of bilateral term  # 10.0,
-    alpha = 30,    # spatial std  # 80,  
-    beta  = 15,    # rgb  std  # 13,  
-    w2    = 10,     # weight of spatial term  # 3.0, 
-    gamma = 5,     # spatial std  # 3,   
-    it    = 4.0,   # iteration  # 5.0, 
+def vis_segmentations(
+    images_list: str,
+    images_root: str,
+    segmentations_root: str,
+    bbox_file: Optional[str] = None,
 ):
     """
     Example:
-    python extract.py extract_crf_semantic_segmentations \
-        --prefix VOC2012-dino_vits16 \
-        --features_root ./features_VOC2012 \
-        --semantic_segmentations_root ./semantic_segmentations_VOC2012 \
-        --output_dir ./crf_semantic_segmentations_VOC2012 \
-    """
-    crf_params = (w1, alpha, beta, w2, gamma, it)
-    fn = partial(_extract_crf_semantic_segmentations, num_clusters=num_clusters, crf_params=crf_params, prefix=prefix, output_dir=output_dir)
-    inputs = _get_feature_and_segment_inputs(features_root=features_root, segments_root=semantic_segmentations_root, segments_name='mask', ext='.png')
-    _parallel_process(inputs, fn, multiprocessing)
-
-
-def vis_segments(
-    features_root: str = './features_VOC2012',
-    segments_root: str = './eigensegments_VOC2012',
-):
-    """
-    Example:
-    streamlit run extract-segments.py vis_segments -- \
-        --features_root ./features_VOC2012 \
-        --segments_root ./eigensegments_VOC2012 \
-    """
-    # Streamlit setup
-    import streamlit as st
-    st.set_page_config(layout='wide')
-
-    # Load
-    inputs = _get_feature_and_segment_inputs(features_root=features_root, segments_root=segments_root)
-    print(f'{len(inputs)=}')
-
-    # Combine
-    for i, (features_file, fs) in inputs:
-        if i > 20: break
-
-        # Combine
-        features_dict = torch.load(features_file, map_location='cpu')
-        segments_dict = torch.load(fs, map_location='cpu')
-        data_dict = defaultdict(list)
-        for k, v in features_dict.items():
-            data_dict[k] = v[0] if (isinstance(v, list) and len(v) == 1) else v
-        for k, v in segments_dict.items():
-            data_dict[k] = v[0] if (isinstance(v, list) and len(v) == 1) else v
-        data_dict = dict(data_dict)
-
-        # Print stuff
-        if i == 0:
-            for k, v in data_dict.items():
-                st.write(k, type(v), v.shape if torch.is_tensor(v) else (v if isinstance(v, str) else None))
-
-        # Display stuff
-        img = data_dict['images_resized']
-        image = _inverse_transform(img.squeeze(0))
-        eig_seg = data_dict['eigensegments'].numpy() * 255
-        obj_seg = data_dict['eigensegments_object'].numpy() * 255
-        cols = st.columns(1 + 3 + 3)
-        cols[0].image(image, caption=f'{data_dict["files"][0]} ({i})')
-        cols[1].image(obj_seg[0], caption='obj seg 0')
-        cols[2].image(obj_seg[1], caption='obj seg 1')
-        cols[3].image(obj_seg[2], caption='obj seg 2')
-        cols[4].image(eig_seg[0], caption='eig seg 0')
-        cols[5].image(eig_seg[1], caption='eig seg 1')
-        cols[6].image(eig_seg[2], caption='eig seg 2')
-
-
-def vis_semantic_segmentations(
-    images_file: str = './image-lists/VOC2012.txt',
-    images_root: str = '/path/to/JPEGImages',
-    semantic_segmentations_str: str = './semantic_segmentations_VOC2012/VOC2012-dino_vits16-mask-{image_id}.png',
-):
-    """
-    Example:
-    streamlit run extract-segments.py vis_semantic_segmentations -- \
-        --images_file ./image-lists/VOC2012.txt \
-        --images_root /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012/VOCdevkit/VOC2012/JPEGImages \
-        --semantic_segmentations_str ./crf_semantic_segmentations_VOC2012/VOC2012-dino_vits16-mask-{image_id}.png \
+        streamlit run extract.py vis_segmentations -- \
+            --images_list "./data/VOC2012/lists/images.txt" \
+            --images_root "./data/VOC2012/images" \
+            --segmentations_root "./data/VOC2012/multi_region_segmentation"
     """
     # Streamlit setup
     from skimage.color import label2rgb
@@ -659,49 +342,124 @@ def vis_semantic_segmentations(
     import streamlit as st
     st.set_page_config(layout='wide')
 
+    # Inputs
+    image_paths = []
+    segmap_paths = []
+    images_root = Path(images_root)
+    segmentations_root = Path(segmentations_root)
+    for image_file in Path(images_list).read_text().splitlines():
+        segmap_file = f'{Path(image_file).stem}.png'
+        image_paths.append(images_root / image_file)
+        segmap_paths.append(segmentations_root / segmap_file)
+    print(f'Found {len(image_paths)} image and segmap paths')
+
+    # Load optional bounding boxes
+    if bbox_file is not None:
+        bboxes_list = torch.load(bbox_file)
+
+    # Colors
+    colors = get_cmap('tab20', 21).colors[:, :3]
+
     # Load
-    colors = get_cmap('tab10', 21).colors[:, :3]
-    for i, image_name in enumerate(Path(images_file).read_text().splitlines()):
-        image_id = Path(image_name).stem
-        semantic_segmap_file = semantic_segmentations_str.format(image_id=image_id)
-        image_file = Path(images_root) / image_name
-        # target_file = Path(image_root) / '..' / ''
-
+    for i, (image_path, segmap_path) in enumerate(zip(image_paths, segmap_paths)):
+        if i > 20: break
+        image_id = image_path.stem
+        
+        # Streamlit
+        cols = []
+        
         # Load
-        image = np.array(Image.open(image_file).convert('RGB'))
-        semantic_segmap = np.array(Image.open(semantic_segmap_file).resize(image.shape[:2][::-1], resample=Image.NEAREST))
-        # semantic_segmap = resize(semantic_segmap, output_shape=, order=0).astype(semantic_segmap.dtype)
+        image = np.array(Image.open(image_path).convert('RGB'))
+        segmap = np.array(Image.open(segmap_path))
+        segmap_fullres = cv2.resize(segmap, dsize=image.shape[:2][::-1], interpolation=cv2.INTER_NEAREST)
+        
+        # Streamlit
+        cols.append({'image': image, 'caption': image_id})
 
+        # Load optional bounding boxes
+        bboxes = None
+        if bbox_file is not None:
+            bboxes = torch.tensor(bboxes_list[i]['bboxes_original_resolution'])
+            assert bboxes_list[i]['id'] == image_id, f"{bboxes_list[i]['id']=} but {image_id=}"
+            image_torch = torch.from_numpy(image).permute(2, 0, 1)
+            image_with_boxes_torch = draw_bounding_boxes(image_torch, bboxes)
+            image_with_boxes = image_with_boxes_torch.permute(1, 2, 0).numpy()
+            
+            # Streamlit
+            cols.append({'image': image_with_boxes})
+            
         # Color
-        print(np.unique(semantic_segmap))
-        blank_segmap_overlay = label2rgb(label=semantic_segmap, image=np.full_like(image, 255), 
-            colors=colors[np.unique(semantic_segmap)], bg_label=0, alpha=1.0)
-        image_segmap_overlay = label2rgb(label=semantic_segmap, image=image, 
-            colors=colors[np.unique(semantic_segmap)], bg_label=0, alpha=0.45)
+        segmap_label_indices, segmap_label_counts = np.unique(segmap, return_counts=True)
+        blank_segmap_overlay = label2rgb(label=segmap_fullres, image=np.full_like(image, 128), 
+            colors=colors[segmap_label_indices], bg_label=0, alpha=1.0)
+        image_segmap_overlay = label2rgb(label=segmap_fullres, image=image, 
+            colors=colors[segmap_label_indices], bg_label=0, alpha=0.45)
+        segmap_caption = dict(zip(segmap_label_indices.tolist(), (segmap_label_counts).tolist()))
 
-        # Display stuff
-        cols = st.columns(5)
-        cols[0].image(image, caption=image_id)
-        # cols[1].image(blank_target_overlay, caption='target')
-        # cols[2].image(image_target_overlay, caption='target')
-        cols[1].image(blank_segmap_overlay, caption=str(np.unique(semantic_segmap).tolist()))
-        cols[2].image(image_segmap_overlay, caption=str(np.unique(semantic_segmap).tolist()))
+        # Streamlit
+        cols.append({'image': blank_segmap_overlay, 'caption': segmap_caption})
+        cols.append({'image': image_segmap_overlay, 'caption': segmap_caption})
 
-        if i > 60:
-            break
+        # Display
+        for d, col in zip(cols, st.columns(len(cols))):
+            col.image(**d)
+
+
+def extract_bbox_features(
+    images_root: str,
+    bbox_file: str,
+    model_name: str,
+    output_file: str,
+):
+    """
+    Example:
+        python extract.py extract_bbox_features \
+            --model_name dino_vits16 \
+            --images_root "./data/VOC2012/images" \
+            --bbox_file "./data/VOC2012/multi_region_bboxes/bboxes_e2_d5.pth" \
+            --output_file "./data/VOC2012/features" \
+            --output_file "./data/VOC2012/multi_region_bboxes/bbox_features_e2_d5.pth" \
+    """
+
+    # Load bounding boxes
+    bbox_list = torch.load(bbox_file)
+    total_num_boxes = sum(len(d['bboxes']) for d in bbox_list)
+    print(f'Loaded bounding box list. There are {total_num_boxes} total bounding boxes.')
+
+    # Models
+    model_name_lower = model_name.lower()
+    model, val_transform, patch_size, num_heads = utils.get_model(model_name_lower)
+    model.eval().to('cuda')
+
+    # Loop over boxes
+    for bbox_dict in tqdm(bbox_list):
+        # Get image info
+        image_id = bbox_dict['id']
+        bboxes = bbox_dict['bboxes_original_resolution']
+        # Load image as tensor
+        image_filename = str(Path(images_root) / f'{image_id}.jpg')
+        image = val_transform(Image.open(image_filename).convert('RGB'))  # (3, H, W)
+        image = image.unsqueeze(0).to('cuda')  # (1, 3, H, W)
+        for (xmin, ymin, xmax, ymax) in bboxes:
+            image_crop = image[:, :, ymin:ymax, xmin:xmax]
+            feature_crop = model(image_crop)
+            bbox_dict['feature'] = feature_crop.squeeze().cpu()
+    
+    # Save
+    torch.save(bbox_list, output_file)
+    print(f'Saved features to {output_file}')
+
 
 
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
     fire.Fire(dict(
-        extract_features=extract_features,
-        extract_eigs=extract_eigs, 
-        extract_object_mattes=extract_object_mattes,
-        extract_object_masks=extract_object_masks,
-        extract_multilabel_masks=extract_multilabel_masks,
-        extract_semantic_segmentations=extract_semantic_segmentations,
-        extract_crf_semantic_segmentations=extract_crf_semantic_segmentations,
-        vis_segments=vis_segments,
-        vis_semantic_segmentations=vis_semantic_segmentations,
+        extract_features=extract_features,  # step 1
+        extract_eigs=extract_eigs,  # step 2
+        extract_multi_region_segmentation=extract_multi_region_segmentation,  # step 3
+        extract_bboxes=extract_bboxes,  # step 4
+        extract_bbox_features=extract_bbox_features,  # step 5
+        # extract_bbox_clusters=extract_bbox_clusters,  # step 6
+        vis_segmentations=vis_segmentations,
     ))
 

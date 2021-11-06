@@ -21,6 +21,7 @@ import time
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
 from sklearn.cluster import MiniBatchKMeans
 try:
@@ -104,10 +105,11 @@ def load_single_image(path, transform):
     image = Image.open(path)
 
 
-def get_paired_input_files(dir1, dir2):
+def get_paired_input_files(dir1, dir2, desc=None):
     files1 = sorted(Path(dir1).iterdir())
     files2 = sorted(Path(dir2).iterdir())
     assert len(files1) == len(files2)
+    files1 = tqdm(files1, desc=desc)
     return list(enumerate(zip(files1, files2)))
 
 
@@ -122,7 +124,9 @@ def get_largest_cc(mask: np.array):
 def erode_or_dilate_mask(x: Union[torch.Tensor, np.ndarray], r: int = 0, erode=True):
     fn = binary_erosion if erode else binary_dilation
     for _ in range(r):
-        x = fn(x)
+        x_new = fn(x)
+        if x_new.sum() > 0:  # do not erode the entire mask away
+            x = x_new
     return x
 
 
@@ -187,6 +191,9 @@ def get_border_background_heuristic(segmap: np.array, threshold: float = 0.60) -
 
 def get_roundness_background_heuristic(mask: np.array, threshold: float = 0.05) -> bool:
     return get_roundness(mask) < threshold  # returns False if the background is too round
+
+
+
 
 
 def get_feature_and_segment_inputs(features_root, segments_root, segments_name='eigensegments', ext='.pth') -> List[Tuple[int, Tuple[str, str]]]:

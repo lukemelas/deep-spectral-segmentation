@@ -19,7 +19,7 @@ import wandb
 import albumentations as A
 import albumentations.pytorch
 import cv2
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from sklearn.decomposition import PCA
 from sklearn.cluster import MiniBatchKMeans
 from skimage.color import label2rgb
@@ -56,6 +56,12 @@ def main(cfg: DictConfig):
         segments_dir=cfg.segments_dir,
         transform=None,  # no transform to evaluate at original resolution
     )
+
+    # If the data is already clustered, then we simply need to evaluate
+    if cfg.data_is_already_clustered:
+        eval_stats = evaluate(cfg=cfg, dataset_val=dataset_val, preds=None)
+        print(eval_stats)
+        return
     
     # Multiple trials
     for i in range(cfg.kmeans.num_trials):
@@ -70,7 +76,6 @@ def main(cfg: DictConfig):
         # Evaluate
         eval_stats = evaluate(cfg=cfg, dataset_val=dataset_val, preds=preds)
         print(eval_stats)
-
 
 
 def compute_and_save_dense_embeddings(
@@ -192,7 +197,7 @@ def evaluate(
         *,
         cfg: DictConfig,
         dataset_val: Iterable,
-        preds: Iterable,
+        preds: Optional[Iterable] = None,
         n_clusters: Optional[int] = None):
 
     # Add background class
@@ -211,11 +216,14 @@ def evaluate(
     offset_ = 0
 
     # Add all pixels to our arrays
-    pbar = tqdm(zip(preds, dataset_val), desc='Concatenating all predictions')
-    for (pred_cluster, (image, target, mask, features, metadata)) in pbar:
-        target = np.array(target)
-        # Assign the cluster to the mask
-        mask[mask == 1] = pred_cluster
+    for i in trange(len(dataset_val), desc='Concatenating all predictions'):
+        image, target, mask, features, metadata = dataset_val[i]
+        # If preds is None, then our data is already clustered. Otherwise, then
+        # our mask is binary, and we need to assign all pixels in the mask to
+        # the predicted cluster
+        if preds is not None:
+            pred_cluster = preds[i]
+            mask[mask == 1] = pred_cluster
         # Check where ground-truth is valid and append valid pixels to the array
         valid = (target != 255)
         n_valid = np.sum(valid)
@@ -242,6 +250,7 @@ def evaluate(
     else:
         print('Using majority voting for matching')
         match = eval_utils.majority_vote(all_preds, all_gt, preds_k=n_clusters, targets_k=n_classes)
+    print(f'Optimal matching: {match}')
 
     # Remap predictions
     reordered_preds = np.zeros(num_elems, dtype=all_preds.dtype)

@@ -1,9 +1,5 @@
-from PIL import Image
-from collections import defaultdict
-from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
-from scipy.sparse.linalg import eigsh
 from skimage.measure import label as measure_label
 from skimage.measure import perimeter as measure_perimeter
 from skimage.morphology import binary_erosion, binary_dilation
@@ -16,12 +12,10 @@ import numpy as np
 import sys
 import time
 import torch
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
 
 
-def get_model(name):
+def get_model(name: str):
     if 'dino' in name:
         model = torch.hub.load('facebookresearch/dino:main', name)
         model.fc = torch.nn.Identity()
@@ -34,7 +28,7 @@ def get_model(name):
     return model, val_transform, patch_size, num_heads
 
 
-def get_transform(name):
+def get_transform(name: str):
     if 'dino' in name:
         transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
     else:
@@ -42,7 +36,7 @@ def get_transform(name):
     return transform
 
 
-def get_inverse_transform(name):
+def get_inverse_transform(name: str):
     if 'dino' in name:
         transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize([-0.485/0.229, -0.456/0.224, -0.406/0.225], [1/0.229, 1/0.224, 1/0.225])])
     else:
@@ -79,11 +73,7 @@ def get_image_sizes(data_dict: dict):
     return (B, C, H, W, P, H_patch, W_patch, H_pad, W_pad)
 
 
-def load_single_image(path, transform):
-    image = Image.open(path)
-
-
-def _get_files(p):
+def _get_files(p: str):
     if Path(p).is_dir():
         return sorted(Path(p).iterdir())
     elif Path(p).is_file():
@@ -92,7 +82,7 @@ def _get_files(p):
         raise ValueError(p)
         
 
-def get_paired_input_files(path1, path2):
+def get_paired_input_files(path1: str, path2: str):
     files1 = _get_files(path1)
     files2 = _get_files(path2)
     assert len(files1) == len(files2)

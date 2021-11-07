@@ -121,8 +121,8 @@ def _extract_eig(
     
     # Load
     output_file = str(Path(output_dir) / f'{image_id}.pth')
-    if Path(output_file).is_file():
-        return  # skip because already generated
+    # if Path(output_file).is_file():
+    #     return  # skip because already generated
 
     # Load affinity matrix
     k_feats = data_dict['k'].squeeze()
@@ -185,6 +185,7 @@ def _extract_multi_region_segmentations(
     inp: Tuple[int, Tuple[str, str]], 
     adaptive: bool, 
     non_adaptive_num_segments: int,
+    infer_bg_index: bool,
     output_dir: str,
 ):
     index, (feature_path, eigs_path) = inp
@@ -222,12 +223,13 @@ def _extract_multi_region_segmentations(
     # TODO: Improve this step in the pipeline.
     # Background detection: we assume that the segment with the most border pixels is the 
     # background region. We will always make this region equal 0. 
-    indices, normlized_counts = utils.get_border_fraction(segmap)
-    bg_index = indices[np.argmax(normlized_counts)].item()
-    bg_region = (segmap == bg_index)
-    zero_region = (segmap == 0)
-    segmap[bg_region] = 0
-    segmap[zero_region] = bg_index
+    if infer_bg_index:
+        indices, normlized_counts = utils.get_border_fraction(segmap)
+        bg_index = indices[np.argmax(normlized_counts)].item()
+        bg_region = (segmap == bg_index)
+        zero_region = (segmap == 0)
+        segmap[bg_region] = 0
+        segmap[zero_region] = bg_index
 
     # Save dict
     Image.fromarray(segmap).convert('L').save(output_file)
@@ -239,6 +241,7 @@ def extract_multi_region_segmentations(
     output_dir: str,
     adaptive: bool = False,
     non_adaptive_num_segments: int = 4,
+    infer_bg_index: bool = True,
     multiprocessing: int = 0
 ):
     """
@@ -249,8 +252,55 @@ def extract_multi_region_segmentations(
         --output_dir "./data/VOC2012/multi_region_segmentation/fixed" \
     """
     print(f'Adaptive: {adaptive}')
-    fn = partial(_extract_multi_region_segmentations, adaptive=adaptive, 
+    fn = partial(_extract_multi_region_segmentations, adaptive=adaptive, infer_bg_index=infer_bg_index,
                  non_adaptive_num_segments=non_adaptive_num_segments, output_dir=output_dir)
+    inputs = utils.get_paired_input_files(features_dir, eigs_dir)
+    utils.parallel_process(inputs, fn, multiprocessing)
+
+
+def _extract_single_region_segmentations(
+    inp: Tuple[int, Tuple[str, str]], 
+    threshold: float,
+    output_dir: str,
+):
+    index, (feature_path, eigs_path) = inp
+
+    # Load 
+    data_dict = torch.load(feature_path, map_location='cpu')
+    data_dict.update(torch.load(eigs_path, map_location='cpu'))
+
+    # Output file
+    id = Path(data_dict['id'])
+    output_file = str(Path(output_dir) / f'{id}.png')
+    if Path(output_file).is_file():
+        return  # skip because already generated
+
+    # Sizes
+    B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
+    
+    # Eigenvector
+    eigenvector = data_dict['eigenvectors'][1].numpy()  # take smallest non-zero eigenvector
+    segmap = (eigenvector > threshold).reshape(H_patch, W_patch)
+
+    # Save dict
+    Image.fromarray(segmap).convert('L').save(output_file)
+
+
+def extract_single_region_segmentations(
+    features_dir: str,
+    eigs_dir: str,
+    output_dir: str,
+    threshold: float = 0.0,
+    multiprocessing: int = 0
+):
+    """
+    Example:
+    python extract.py extract_single_region_segmentations \
+        --features_dir "./data/VOC2012/features" \
+        --eigs_dir "./data/VOC2012/eigs" \
+        --output_dir "./data/VOC2012/single_region_segmentation/patches" \
+    """
+    fn = partial(_extract_single_region_segmentations, threshold=threshold, output_dir=output_dir)
     inputs = utils.get_paired_input_files(features_dir, eigs_dir)
     utils.parallel_process(inputs, fn, multiprocessing)
 
@@ -259,6 +309,7 @@ def _extract_bbox(
     inp: Tuple[str, str],
     num_erode: int,
     num_dilate: int,
+    skip_bg_index: bool,
 ):
     index, (feature_path, segmentation_path) = inp
 
@@ -274,7 +325,7 @@ def _extract_bbox(
     outputs = {'bboxes': [], 'bboxes_original_resolution': [], 'segment_indices': [], 'id': image_id, 
                'format': "(xmin, ymin, xmax, ymax)"}
     for segment_index in sorted(np.unique(segmap).tolist()):
-        if segment_index > 0:  # skip 0, because 0 is the background
+        if (not skip_bg_index) or (segment_index > 0):  # skip 0, because 0 is the background
             
             # Erode and dilate mask
             binary_mask = (segmap == segment_index)
@@ -303,6 +354,7 @@ def extract_bboxes(
     output_file: str,
     num_erode: int = 2,
     num_dilate: int = 3,
+    skip_bg_index: bool = True,
 ):
     """
     Note: There is no need for multiprocessing here, as it is more convenient to save 
@@ -313,94 +365,11 @@ def extract_bboxes(
         --num_erode 2 --num_dilate 5 \
         --output_file "./data/VOC2012/multi_region_bboxes/fixed/bboxes_e2_d5.pth" \
     """
-    fn = partial(_extract_bbox, num_erode=num_erode, num_dilate=num_dilate)
+    fn = partial(_extract_bbox, num_erode=num_erode, num_dilate=num_dilate, skip_bg_index=skip_bg_index)
     inputs = utils.get_paired_input_files(features_dir, segmentations_dir)
-    # utils.parallel_process(inputs, fn, multiprocessing)  # <-- if you want multiprocessing, but it's not necessary
-    all_outputs = [fn(inp) for inp in inputs]
+    all_outputs = [fn(inp) for inp in tqdm(inputs, desc='Extracting bounding boxes')]
     torch.save(all_outputs, output_file)
     print('Done')
-
-
-def vis_segmentations(
-    images_list: str,
-    images_root: str,
-    segmentations_root: str,
-    bbox_file: Optional[str] = None,
-):
-    """
-    Example:
-        streamlit run extract.py vis_segmentations -- \
-            --images_list "./data/VOC2012/lists/images.txt" \
-            --images_root "./data/VOC2012/images" \
-            --segmentations_root "./data/VOC2012/multi_region_segmentation/fixed"
-    """
-    # Streamlit setup
-    from skimage.color import label2rgb
-    from matplotlib.cm import get_cmap
-    import streamlit as st
-    st.set_page_config(layout='wide')
-
-    # Inputs
-    image_paths = []
-    segmap_paths = []
-    images_root = Path(images_root)
-    segmentations_root = Path(segmentations_root)
-    for image_file in Path(images_list).read_text().splitlines():
-        segmap_file = f'{Path(image_file).stem}.png'
-        image_paths.append(images_root / image_file)
-        segmap_paths.append(segmentations_root / segmap_file)
-    print(f'Found {len(image_paths)} image and segmap paths')
-
-    # Load optional bounding boxes
-    if bbox_file is not None:
-        bboxes_list = torch.load(bbox_file)
-
-    # Colors
-    colors = get_cmap('tab20', 21).colors[:, :3]
-
-    # Load
-    for i, (image_path, segmap_path) in enumerate(zip(image_paths, segmap_paths)):
-        if i > 20: break
-        image_id = image_path.stem
-        
-        # Streamlit
-        cols = []
-        
-        # Load
-        image = np.array(Image.open(image_path).convert('RGB'))
-        segmap = np.array(Image.open(segmap_path))
-        segmap_fullres = cv2.resize(segmap, dsize=image.shape[:2][::-1], interpolation=cv2.INTER_NEAREST)
-        
-        # Streamlit
-        cols.append({'image': image, 'caption': image_id})
-
-        # Load optional bounding boxes
-        bboxes = None
-        if bbox_file is not None:
-            bboxes = torch.tensor(bboxes_list[i]['bboxes_original_resolution'])
-            assert bboxes_list[i]['id'] == image_id, f"{bboxes_list[i]['id']=} but {image_id=}"
-            image_torch = torch.from_numpy(image).permute(2, 0, 1)
-            image_with_boxes_torch = draw_bounding_boxes(image_torch, bboxes)
-            image_with_boxes = image_with_boxes_torch.permute(1, 2, 0).numpy()
-            
-            # Streamlit
-            cols.append({'image': image_with_boxes})
-            
-        # Color
-        segmap_label_indices, segmap_label_counts = np.unique(segmap, return_counts=True)
-        blank_segmap_overlay = label2rgb(label=segmap_fullres, image=np.full_like(image, 128), 
-            colors=colors[segmap_label_indices], bg_label=0, alpha=1.0)
-        image_segmap_overlay = label2rgb(label=segmap_fullres, image=image, 
-            colors=colors[segmap_label_indices], bg_label=0, alpha=0.45)
-        segmap_caption = dict(zip(segmap_label_indices.tolist(), (segmap_label_counts).tolist()))
-
-        # Streamlit
-        cols.append({'image': blank_segmap_overlay, 'caption': segmap_caption})
-        cols.append({'image': image_segmap_overlay, 'caption': segmap_caption})
-
-        # Display
-        for d, col in zip(cols, st.columns(len(cols))):
-            col.image(**d)
 
 
 def extract_bbox_features(
@@ -549,8 +518,6 @@ def extract_semantic_segmentations(
     print(f'Saved features to {output_dir}')
 
 
-# TODO: CRF semantic segmentation, evaluation, train DINO, look into CLIP
-
 def _extract_crf_segmentations(
     inp: Tuple[int, Tuple[str, str]], 
     images_root: str,
@@ -620,17 +587,114 @@ def extract_crf_segmentations(
     utils.parallel_process(inputs, fn, multiprocessing)
 
 
+def vis_segmentations(
+    images_list: str,
+    images_root: str,
+    segmentations_root: str,
+    bbox_file: Optional[str] = None,
+):
+    """
+    Example:
+        streamlit run extract.py vis_segmentations -- \
+            --images_list "./data/VOC2012/lists/images.txt" \
+            --images_root "./data/VOC2012/images" \
+            --segmentations_root "./data/VOC2012/multi_region_segmentation/fixed"
+    or alternatively:
+            --segmentations_root "./data/VOC2012/semantic_segmentations/crf/fixed/segmaps_e2_d5_pca_32/"
+    """
+    # Streamlit setup
+    from skimage.color import label2rgb
+    from matplotlib.cm import get_cmap
+    import streamlit as st
+    st.set_page_config(layout='wide')
+
+    # Inputs
+    image_paths = []
+    segmap_paths = []
+    images_root = Path(images_root)
+    segmentations_root = Path(segmentations_root)
+    for image_file in Path(images_list).read_text().splitlines():
+        segmap_file = f'{Path(image_file).stem}.png'
+        image_paths.append(images_root / image_file)
+        segmap_paths.append(segmentations_root / segmap_file)
+    print(f'Found {len(image_paths)} image and segmap paths')
+
+    # Load optional bounding boxes
+    if bbox_file is not None:
+        bboxes_list = torch.load(bbox_file)
+
+    # Colors
+    colors = get_cmap('tab20', 21).colors[:, :3]
+
+    # Which index
+    which_index = st.number_input(label='Which index to view (0 for all)', value=0)
+
+    # Load
+    total = 0
+    for i, (image_path, segmap_path) in enumerate(zip(image_paths, segmap_paths)):
+        if total > 40: break
+        image_id = image_path.stem
+        
+        # Streamlit
+        cols = []
+        
+        # Load
+        image = np.array(Image.open(image_path).convert('RGB'))
+        segmap = np.array(Image.open(segmap_path))
+        segmap_fullres = cv2.resize(segmap, dsize=image.shape[:2][::-1], interpolation=cv2.INTER_NEAREST)
+
+        # Only view images with a specific class
+        if which_index not in np.unique(segmap):
+            continue
+        total += 1
+
+        # Streamlit
+        cols.append({'image': image, 'caption': image_id})
+
+        # Load optional bounding boxes
+        bboxes = None
+        if bbox_file is not None:
+            bboxes = torch.tensor(bboxes_list[i]['bboxes_original_resolution'])
+            assert bboxes_list[i]['id'] == image_id, f"{bboxes_list[i]['id']=} but {image_id=}"
+            image_torch = torch.from_numpy(image).permute(2, 0, 1)
+            image_with_boxes_torch = draw_bounding_boxes(image_torch, bboxes)
+            image_with_boxes = image_with_boxes_torch.permute(1, 2, 0).numpy()
+            
+            # Streamlit
+            cols.append({'image': image_with_boxes})
+            
+        # Color
+        segmap_label_indices, segmap_label_counts = np.unique(segmap, return_counts=True)
+        print(segmap_label_indices, colors[segmap_label_indices])
+        blank_segmap_overlay = label2rgb(label=segmap_fullres, image=np.full_like(image, 128), 
+            colors=colors[segmap_label_indices[segmap_label_indices != 0]], bg_label=0, alpha=1.0)
+        image_segmap_overlay = label2rgb(label=segmap_fullres, image=image, 
+            colors=colors[segmap_label_indices[segmap_label_indices != 0]], bg_label=0, alpha=0.45)
+        segmap_caption = dict(zip(segmap_label_indices.tolist(), (segmap_label_counts).tolist()))
+
+        # Streamlit
+        cols.append({'image': blank_segmap_overlay, 'caption': segmap_caption})
+        cols.append({'image': image_segmap_overlay, 'caption': segmap_caption})
+
+        # Display
+        for d, col in zip(cols, st.columns(len(cols))):
+            col.image(**d)
+
+
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
     fire.Fire(dict(
         extract_features=extract_features,  # step 1
         extract_eigs=extract_eigs,  # step 2
+        # multi-region pipeline
         extract_multi_region_segmentations=extract_multi_region_segmentations,  # step 3
         extract_bboxes=extract_bboxes,  # step 4
         extract_bbox_features=extract_bbox_features,  # step 5
         extract_bbox_clusters=extract_bbox_clusters,  # step 6
         extract_semantic_segmentations=extract_semantic_segmentations,  # step 7
         extract_crf_segmentations=extract_crf_segmentations,  # step 8
-        vis_segmentations=vis_segmentations,
+        # single
+        extract_single_region_segmentations=extract_single_region_segmentations, 
+        # vis
+        vis_segmentations=vis_segmentations,  # optional
     ))
-

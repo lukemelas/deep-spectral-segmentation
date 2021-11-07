@@ -251,7 +251,7 @@ def extract_multi_region_segmentations(
         --eigs_dir "./data/VOC2012/eigs" \
         --output_dir "./data/VOC2012/multi_region_segmentation/fixed" \
     """
-    print(f'Adaptive: {adaptive}')
+    utils.make_output_dir(output_dir)
     fn = partial(_extract_multi_region_segmentations, adaptive=adaptive, infer_bg_index=infer_bg_index,
                  non_adaptive_num_segments=non_adaptive_num_segments, output_dir=output_dir)
     inputs = utils.get_paired_input_files(features_dir, eigs_dir)
@@ -300,6 +300,7 @@ def extract_single_region_segmentations(
         --eigs_dir "./data/VOC2012/eigs" \
         --output_dir "./data/VOC2012/single_region_segmentation/patches" \
     """
+    utils.make_output_dir(output_dir)
     fn = partial(_extract_single_region_segmentations, threshold=threshold, output_dir=output_dir)
     inputs = utils.get_paired_input_files(features_dir, eigs_dir)
     utils.parallel_process(inputs, fn, multiprocessing)
@@ -365,6 +366,7 @@ def extract_bboxes(
         --num_erode 2 --num_dilate 5 \
         --output_file "./data/VOC2012/multi_region_bboxes/fixed/bboxes_e2_d5.pth" \
     """
+    utils.make_output_dir(str(Path(output_file).parent), check_if_empty=False)
     fn = partial(_extract_bbox, num_erode=num_erode, num_dilate=num_dilate, skip_bg_index=skip_bg_index)
     inputs = utils.get_paired_input_files(features_dir, segmentations_dir)
     all_outputs = [fn(inp) for inp in tqdm(inputs, desc='Extracting bounding boxes')]
@@ -438,15 +440,14 @@ def extract_bbox_clusters(
     total_num_boxes = sum(len(d['bboxes']) for d in bbox_list)
     print(f'Loaded bounding box list. There are {total_num_boxes} total bounding boxes with features.')
 
-    # Loop over boxes and stack features
-    all_features = []
-    for bbox_dict in tqdm(bbox_list, desc='Stacking features'):
-        for feat in bbox_dict['features'].numpy():
-            all_features.append(feat.squeeze())  # (D, )
-    all_features = np.stack(all_features, axis=0)  # (numBbox, D)
+    # Loop over boxes and stack features with PyTorch, because Numpy is too slow
+    print(f'Stacking and normalizing features')
+    all_features = torch.cat([bbox_dict['features'] for bbox_dict in bbox_list], dim=0)  # (numBbox, D)
+    all_features = all_features / torch.norm(all_features, dim=-1, keepdim=True)  # (numBbox, D)f
+    all_features = all_features.numpy()
 
     # Cluster: PCA
-    if pca_dim is not None:
+    if pca_dim:
         pca = PCA(pca_dim)
         print(f'Computing PCA with dimension {pca_dim}')
         all_features = pca.fit_transform(all_features)
@@ -465,7 +466,7 @@ def extract_bbox_clusters(
     idx = 0
     for bbox_dict in bbox_list:
         num_bboxes = len(bbox_dict['bboxes'])
-        bbox_dict['features'] = bbox_dict['features'].squeeze()
+        del bbox_dict['features']  # bbox_dict['features'] = bbox_dict['features'].squeeze()
         bbox_dict['clusters'] = clusters[idx: idx + num_bboxes]
         idx = idx + num_bboxes
     
@@ -665,7 +666,6 @@ def vis_segmentations(
             
         # Color
         segmap_label_indices, segmap_label_counts = np.unique(segmap, return_counts=True)
-        print(segmap_label_indices, colors[segmap_label_indices])
         blank_segmap_overlay = label2rgb(label=segmap_fullres, image=np.full_like(image, 128), 
             colors=colors[segmap_label_indices[segmap_label_indices != 0]], bg_label=0, alpha=1.0)
         image_segmap_overlay = label2rgb(label=segmap_fullres, image=image, 

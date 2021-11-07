@@ -166,6 +166,7 @@ def extract_eigs(
     images_root: str,
     features_dir: str,
     output_dir: str,
+    which_matrix: str = 'laplacian',
     K: int = 5,
     multiprocessing: int = 0
 ):
@@ -174,9 +175,11 @@ def extract_eigs(
     python extract.py extract_eigs \
         --images_root "./data/VOC2012/images" \
         --features_dir "./data/VOC2012/features" \
-        --output_dir "./data/VOC2012/eigs" \
+        --which_matrix "laplacian" \
+        --output_dir "./data/VOC2012/eigs/laplacian" \
     """
-    fn = partial(_extract_eig, K=K, images_root=images_root, output_dir=output_dir)
+    utils.make_output_dir(output_dir)
+    fn = partial(_extract_eig, K=K, which_matrix=which_matrix, images_root=images_root, output_dir=output_dir)
     inputs = list(enumerate(sorted(Path(features_dir).iterdir())))
     utils.parallel_process(inputs, fn, multiprocessing)
 
@@ -248,7 +251,7 @@ def extract_multi_region_segmentations(
     Example:
     python extract.py extract_multi_region_segmentations \
         --features_dir "./data/VOC2012/features" \
-        --eigs_dir "./data/VOC2012/eigs" \
+        --eigs_dir "./data/VOC2012/eigs/laplacian" \
         --output_dir "./data/VOC2012/multi_region_segmentation/fixed" \
     """
     utils.make_output_dir(output_dir)
@@ -297,7 +300,7 @@ def extract_single_region_segmentations(
     Example:
     python extract.py extract_single_region_segmentations \
         --features_dir "./data/VOC2012/features" \
-        --eigs_dir "./data/VOC2012/eigs" \
+        --eigs_dir "./data/VOC2012/eigs/laplacian" \
         --output_dir "./data/VOC2012/single_region_segmentation/patches" \
     """
     utils.make_output_dir(output_dir)
@@ -412,6 +415,7 @@ def extract_bbox_features(
         features_crops = []
         for (xmin, ymin, xmax, ymax) in bboxes:
             image_crop = image[:, :, ymin:ymax, xmin:xmax]
+            print(image_crop.shape, (xmin, ymin, xmax, ymax))
             features_crop = model(image_crop).squeeze().cpu()
             features_crops.append(features_crop)
         bbox_dict['features'] = torch.stack(features_crops, dim=0)

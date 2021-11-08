@@ -12,7 +12,7 @@ from tqdm import tqdm, trange
 from skimage.color import label2rgb
 from matplotlib.cm import get_cmap
 
-import utils
+import util as utils
 import eval_utils
 from datasets.voc import VOCSegmentationWithPseudolabels
 

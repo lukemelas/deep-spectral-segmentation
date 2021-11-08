@@ -1,6 +1,7 @@
 from pathlib import Path
 from PIL import Image
 from typing import Any, Callable, Dict, Optional, Tuple, List
+import cv2
 from torchvision.datasets.voc import _VOCBase
 import torch
 import numpy as np
@@ -52,12 +53,14 @@ class VOCSegmentation(_VOCBase):
         return img, target, metadata
 
 
-class VOCSegmentationWithPseudolabels(VOCSegmentation):
-    def __init__(self, *args, segments_dir, transform = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._prepare_segments_dir(segments_dir)
-        self.transform = transform
+class VOCSegmentationWithPseudolabelsBase(VOCSegmentation):
     
+    def _prepare_label_map(self, label_map):
+        if label_map is not None:
+            self.label_map_fn = np.vectorize(label_map.__getitem__)
+        else:
+            self.label_map_fn = None
+
     def _prepare_segments_dir(self, segments_dir):
         self.segments_dir = segments_dir
         # Get segment and image files, which are assumed to be in correspondence
@@ -86,32 +89,43 @@ class VOCSegmentationWithPseudolabels(VOCSegmentation):
         metadata = {'id': Path(self.images[index]).stem, 'path': self.images[index], 'shape': tuple(img.shape[:2])}
         # New: load segmap and accompanying metedata
         pseudolabel = np.array(Image.open(self.segments[index]))
-        if pseudolabel.size[0] == img.size[0] // 16:  # HACK: this is a hack at the moment
-            pseudolabel = pseudolabel.resize(img.size, resample=Image.NEAREST)
+        if pseudolabel.shape[0] == img.shape[0] // 16:  # HACK: this is a hack at the moment
+            pseudolabel = cv2.resize(pseudolabel, dsize=img.shape[:2][::-1], interpolation=cv2.INTER_NEAREST)
+        if self.label_map_fn is not None:
+            pseudolabel = self.label_map_fn(pseudolabel)
         return (img, target, pseudolabel, metadata)
+
+
+class VOCSegmentationWithPseudolabels(VOCSegmentationWithPseudolabelsBase):
+    def __init__(self, *args, segments_dir, transform = None, label_map = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._prepare_segments_dir(segments_dir)
+        self.transform = transform
+        self._prepare_label_map(label_map)
 
     def __getitem__(self, index: int):
         img, target, pseudolabel, metadata = self._load(index)
-        if self.transforms is not None:
+        if self.transform is not None:
             # Transform
             data = self.transform(image=img, mask1=target, mask2=pseudolabel)
             # Unpack
             img, target, pseudolabel = data['image'], data['mask1'], data['mask2']
-        return img, target, pseudolabel, metadata
+        return img, target.long(), pseudolabel.long(), metadata
 
 
-class ContrastiveVOCSegmentationWithPseudolabels(VOCSegmentationWithPseudolabels):
-    def __init__(self, *args, segments_dir, transforms_tuple, **kwargs):
+class VOCSegmentationWithPseudolabelsContrastive(VOCSegmentationWithPseudolabelsBase):
+    def __init__(self, *args, segments_dir, transforms_tuple, label_map = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._prepare_segments_dir(segments_dir)
         assert len(transforms_tuple) == 3
         self.joint_transform = transforms_tuple[0] 
         self.geometric_transform = transforms_tuple[1] 
         self.separate_transform = transforms_tuple[2]
+        self._prepare_label_map(label_map)
 
     def __getitem__(self, index: int):
         img, target, pseudolabel, metadata = self._load(index)
-        if self.transforms is not None:
+        if self.joint_transform is not None:
             # Join transform
             data = self.joint_transform(image=img, mask1=target, mask2=pseudolabel)
             # Geometric transform
@@ -121,4 +135,6 @@ class ContrastiveVOCSegmentationWithPseudolabels(VOCSegmentationWithPseudolabels
             data = self.separate_transform(image=data['image'], mask1=data['mask1'], mask2=data['mask2'])
             # Unpack
             img, target, pseudolabel = data['image'], data['mask1'], data['mask2']
-        return img, target, pseudolabel, metadata
+        return img, target.long(), pseudolabel.long(), metadata
+
+        

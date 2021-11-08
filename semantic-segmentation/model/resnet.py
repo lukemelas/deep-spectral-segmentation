@@ -1,6 +1,7 @@
 from typing import Callable
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead, DeepLabV3, ASPP
 from torchvision.models._utils import IntermediateLayerGetter
 
@@ -26,12 +27,14 @@ def get_deeplab_resnet(num_classes: int, name: str = 'deeplabv3plus', output_str
     if name == 'deeplabv3plus':
         return_layers = {'layer4': 'out', 'layer1': 'low_level'}
         classifier = DeepLabHeadV3Plus(inplanes, low_level_planes, num_classes, aspp_dilate)
+        DeepLab = DeepLabV3Plus
     elif name == 'deeplabv3':
         return_layers = {'layer4': 'out'}
+        DeepLab = DeepLabV3  # TODO: this might also have to be DeepLabV3Plus, not sure
         classifier = DeepLabHead(inplanes, num_classes, aspp_dilate)
     backbone = IntermediateLayerGetter(backbone, return_layers=return_layers)
 
-    model = DeepLabV3(backbone, classifier)
+    model = DeepLab(backbone, classifier)
     return model
 
 
@@ -68,6 +71,20 @@ class DeepLabHeadV3Plus(nn.Module):
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+
+
+class DeepLabV3Plus(nn.Module):
+    def __init__(self, backbone, classifier):
+        super().__init__()
+        self.backbone = backbone
+        self.classifier = classifier
+        
+    def forward(self, x):
+        input_shape = x.shape[-2:]
+        features = self.backbone(x)
+        x = self.classifier(features)
+        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
+        return x
 
 
 if __name__ == "__main__":

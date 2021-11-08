@@ -5,8 +5,9 @@ defaults:
 
 name: 'debug'
 job_type: 'train'
+eval_every: 1_000_000
 
-unfrozen_backbone_layers: -1
+unfrozen_backbone_layers: 1  # -1 to disable
 model: 
   num_classes: ${data.num_classes}
 
@@ -15,14 +16,9 @@ checkpoint:
   resume_training: True
   resume_optimizer_only: False
 
-checkpoint:
-  resume: null
-  resume_training: True
-  resume_optimizer_only: False
-
 # Exponential moving average of model parameters
 ema:
-  use_ema: True
+  use_ema: False
   decay: 0.999  # 0.99996 for EfficientNet
   update_every: 100
 
@@ -37,13 +33,11 @@ optimizer:
   scale_learning_rate_with_batch_size: False
   clip_grad_norm: null
 
-  # Transformers optimizer
-  kind: 'transformers'
-  name: 'Adafactor'
+  # Timm optimizer
+  kind: 'timm'
   kwargs:
-      weight_decay: 0.0
-      scale_parameter: True
-      relative_step: False
+    optimizer_name: 'AdamW'
+    weight_decay: 1e-8
 
 # Learning rate scheduling
 scheduler:

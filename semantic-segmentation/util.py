@@ -71,6 +71,10 @@ def get_scheduler(cfg: DictConfig, optimizer: torch.optim.Optimizer) -> Callable
 @torch.no_grad()
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
+    # reshape
+    target = target.reshape(-1)
+    output = output.reshape(target.size(0), -1)
+
     maxk = max(topk)
     batch_size = target.size(0)
 

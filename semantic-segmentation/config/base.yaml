@@ -17,7 +17,7 @@ data:
   dataset: pascal
   train_kwargs:
     root: /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012
-    year: 2012
+    year: "2012"
     image_set: train
     download: False
   val_kwargs:

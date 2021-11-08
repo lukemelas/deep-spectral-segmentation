@@ -17,7 +17,7 @@ from omegaconf import OmegaConf, DictConfig
 import wandb
 from tqdm import tqdm
 
-import utils
+import util as utils
 from model import get_model
 from dataset import get_datasets
 
@@ -75,14 +75,15 @@ def main(cfg: DictConfig):
         train_state = utils.TrainState()  # start training from scratch
 
     # Data
-    dataset_train, dataset_val = get_datasets(cfg)
-    dataloader_train = DataLoader(dataset_train, shuffle=True, drop_last=True, **cfg.data.loader)
-    dataloader_val = DataLoader(dataset_val, shuffle=False, drop_last=False, **{**cfg.data.loader, 'batch_size': 1})
+    dataset_train, dataset_val, collate_fn = get_datasets(cfg)
+    dataloader_train = DataLoader(dataset_train, shuffle=True, drop_last=True, 
+        collate_fn=collate_fn, **cfg.data.loader)
+    dataloader_val = DataLoader(dataset_val, shuffle=False, drop_last=False, 
+        collate_fn=collate_fn, **{**cfg.data.loader, 'batch_size': 1})
     total_batch_size = cfg.data.loader.batch_size * accelerator.num_processes * cfg.gradient_accumulation_steps
 
     # Setup
-    model, optimizer, dataloader_train, dataloader_val = accelerator.prepare(
-        model, optimizer, dataloader_train, dataloader_val)
+    model, optimizer, dataloader_train = accelerator.prepare(model, optimizer, dataloader_train)
 
     # Shared training, evaluation, and visualization args
     kwargs = dict(
@@ -136,7 +137,8 @@ def main(cfg: DictConfig):
             accelerator.save(checkpoint_dict, 'checkpoint-latest.pth')
 
         # Evaluate
-        if (train_state.epoch < 5) or (train_state.epoch) % 1 == 0:
+        if train_state.epoch % cfg.get('eval_every', 1) == 0:
+        # if (train_state.epoch < 5) or (train_state.epoch) % 1 == 0:
             test_stats = evaluate(**kwargs)
             if accelerator.is_local_main_process:
                 if (train_state.best_val is None) or (test_stats['val_loss'] < train_state.best_val):
@@ -167,7 +169,7 @@ def train_one_epoch(
         **_unused_kwargs):
 
     # Train mode
-    model.train()
+    model.train().to(accelerator.device)  # TODO
     log_header = f'Epoch: [{train_state.epoch}]'
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('step', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -178,6 +180,12 @@ def train_one_epoch(
     for i, (inputs, _targets, pseudolabels, _metadata) in enumerate(progress_bar):
         if i >= cfg.get('limit_train_batches', math.inf):
             break
+
+        # print(inputs.shape)  # TODO: remove
+        # print(_targets.shape)
+        # print(pseudolabels.shape)
+        # import pdb
+        # pdb.set_trace()
 
         # Forward
         output = model(inputs)
@@ -207,7 +215,7 @@ def train_one_epoch(
 
             # Model EMA
             if model_ema is not None and (train_state.epoch % cfg.ema.update_every) == 0:
-                model_ema.update()
+                model_ema.update(model.parameters())
 
         # Logging
         log_dict = dict(
@@ -244,7 +252,8 @@ def evaluate(
         **_unused_kwargs):
 
     # Eval mode
-    model.eval()
+    model.eval().to('cpu')  # TODO
+    torch.cuda.synchronize()
     eval_context = model_ema.average_parameters if cfg.ema.use_ema else nullcontext
 
     # Add background class
@@ -270,10 +279,12 @@ def evaluate(
             if evaluate_dataset_pseudolabels:
                 mask = mask
             else:
-                logits = model(inputs).squeeze(0)  # (C, H, W)
+                with torch.no_grad():
+                    logits = model(inputs).squeeze(0)  # (C, H, W)  # TODO
+                    # logits = model(inputs.to(accelerator.device)).squeeze(0)  # (C, H, W)  # TODO
                 mask = torch.argmax(logits, dim=0)  # (H, W)
             # Convert
-            target = targets.numpy()
+            target = targets.numpy().squeeze()
             mask = mask.cpu().numpy()
             # Check where ground-truth is valid and append valid pixels to the array
             valid = (target != 255)

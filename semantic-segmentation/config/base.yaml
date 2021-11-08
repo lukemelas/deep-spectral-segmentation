@@ -26,7 +26,7 @@ data:
     image_set: "val"
     download: False
   loader:
-    batch_size: 16
+    batch_size: 24
     num_workers: 4
     pin_memory: False
   transform:

@@ -21,6 +21,8 @@ import util as utils
 from model import get_model
 from dataset import get_datasets
 
+torch.backends.cudnn.benchmark = False
+
 
 @hydra.main(config_path='config', config_name='train')
 def main(cfg: DictConfig):
@@ -115,6 +117,10 @@ def main(cfg: DictConfig):
     print(f'    Max optimization epochs = {cfg.max_train_epochs}')
     print(f'    Training state = {train_state}')
 
+    # Evaluate masks before training
+    print('Evaluating masks before training...')
+    evaluate(**kwargs, evaluate_dataset_pseudolabels=True) # <-- to eval the masks
+
     # Training loop
     while True:
 
@@ -135,18 +141,20 @@ def main(cfg: DictConfig):
                 'cfg': cfg
             }
             accelerator.save(checkpoint_dict, 'checkpoint-latest.pth')
+            if train_state.epoch in cfg.checkpoint_at:
+                accelerator.save(checkpoint_dict, f'checkpoint-{train_state.epoch:04d}.pth')
 
         # Evaluate
         if train_state.epoch % cfg.get('eval_every', 1) == 0:
         # if (train_state.epoch < 5) or (train_state.epoch) % 1 == 0:
-            test_stats = evaluate(**kwargs)
+            test_stats = evaluate(**kwargs) 
             if accelerator.is_local_main_process:
-                if (train_state.best_val is None) or (test_stats['val_loss'] < train_state.best_val):
-                    train_state.best_val = test_stats['val_loss']
+                if (train_state.best_val is None) or (test_stats['mIoU'] > train_state.best_val):
+                    train_state.best_val = test_stats['mIoU']
                     torch.save(checkpoint_dict, 'checkpoint-best.pth')
                 if cfg.wandb:
                     wandb.log(test_stats)
-                    wandb.run.summary["best_val_loss"] = train_state.best_val
+                    wandb.run.summary["best_mIoU"] = train_state.best_val
         
         # End training
         if ((cfg.max_train_steps is not None and train_state.step >= cfg.max_train_steps) or 
@@ -169,7 +177,7 @@ def train_one_epoch(
         **_unused_kwargs):
 
     # Train mode
-    model.train().to(accelerator.device)  # TODO
+    model.train()
     log_header = f'Epoch: [{train_state.epoch}]'
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('step', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -250,9 +258,12 @@ def evaluate(
         model_ema: Optional[object] = None,
         evaluate_dataset_pseudolabels: bool = False,
         **_unused_kwargs):
+    
+    # To avoid CUDA errors on my machine
+    torch.backends.cudnn.benchmark = False
 
     # Eval mode
-    model.eval().to('cpu')  # TODO
+    model.eval()
     torch.cuda.synchronize()
     eval_context = model_ema.average_parameters if cfg.ema.use_ema else nullcontext
 
@@ -280,12 +291,12 @@ def evaluate(
                 mask = mask
             else:
                 with torch.no_grad():
-                    logits = model(inputs).squeeze(0)  # (C, H, W)  # TODO
+                    logits = model(inputs.to(accelerator.device).contiguous()).squeeze(0)  # (C, H, W)  # TODO
                     # logits = model(inputs.to(accelerator.device)).squeeze(0)  # (C, H, W)  # TODO
                 mask = torch.argmax(logits, dim=0)  # (H, W)
             # Convert
             target = targets.numpy().squeeze()
-            mask = mask.cpu().numpy()
+            mask = mask.cpu().numpy().squeeze()
             # Check where ground-truth is valid and append valid pixels to the array
             valid = (target != 255)
             n_valid = np.sum(valid)
@@ -340,8 +351,8 @@ def evaluate(
     eval_result['jaccards_all_categs'] = jac
     eval_result['mIoU'] = np.mean(jac)
     print('Evaluation of semantic segmentation ')
+    print(f'Full eval result: {eval_result}')
     print('mIoU is %.2f' % (100*eval_result['mIoU']))
-    
     return eval_result
 
 

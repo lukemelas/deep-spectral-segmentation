@@ -59,7 +59,7 @@ def main(cfg: DictConfig):
 
     # If the data is already clustered, then we simply need to evaluate
     if cfg.data_is_already_clustered:
-        eval_stats = evaluate(cfg=cfg, dataset_val=dataset_val, preds=None)
+        eval_stats, match = evaluate(cfg=cfg, dataset_val=dataset_val)
         print(eval_stats)
         return
     
@@ -74,7 +74,7 @@ def main(cfg: DictConfig):
         visualize(cfg=cfg, dataset_val=dataset_val, preds=preds)
 
         # Evaluate
-        eval_stats = evaluate(cfg=cfg, dataset_val=dataset_val, preds=preds)
+        eval_stats, match = evaluate(cfg=cfg, dataset_val=dataset_val, preds=preds)
         print(eval_stats)
 
 
@@ -164,11 +164,12 @@ def visualize(
         *,
         cfg: DictConfig,
         dataset_val: Iterable,
-        preds: Iterable):
+        preds: Iterable,
+        vis_dir: str = './vis'):
 
     # Visualize
     num_vis = 40
-    vis_dir = Path('./vis')
+    vis_dir = Path(vis_dir)
     colors = get_cmap('tab10', cfg.data.num_classes + 1).colors[:,:3]
     pbar = tqdm(zip(preds, dataset_val), total=num_vis, desc='Saving visualizations: ')
     for i, (pred_cluster, (image, target, mask, features, metadata)) in enumerate(pbar):
@@ -197,7 +198,8 @@ def evaluate(
         *,
         cfg: DictConfig,
         dataset_val: Iterable,
-        preds: Optional[Iterable] = None,
+        model: Optional[torch.nn.Module] = None,
+        binary_mask_preds: Optional[Iterable] = None,
         n_clusters: Optional[int] = None):
 
     # Add background class
@@ -218,12 +220,23 @@ def evaluate(
     # Add all pixels to our arrays
     for i in trange(len(dataset_val), desc='Concatenating all predictions'):
         image, target, mask, features, metadata = dataset_val[i]
-        # If preds is None, then our data is already clustered. Otherwise, then
+        # If model is not None, then 
         # our mask is binary, and we need to assign all pixels in the mask to
         # the predicted cluster
-        if preds is not None:
-            pred_cluster = preds[i]
+        if model is not None:
+            assert torch.is_tensor(image), 'pass a transform to dataset_val'
+            device = next(model.parameters()).device
+            logits = model(image.unsqueeze(0).to(device)).squeeze(0)  # (NC, H, W)
+            mask = torch.argmax(logits, dim=0)  # (H, W)
+        # If binary_mask_preds is not None, then we are running a baseline 
+        # with binary mask predictions (which are loaded from the dataset)
+        # and stored in the mask variable. 
+        if binary_mask_preds is not None:
+            pred_cluster = binary_mask_preds[i]
             mask[mask == 1] = pred_cluster
+        # Otherwise, we are evaluating given multi-label masks
+        else:
+            assert mask is not None
         # Check where ground-truth is valid and append valid pixels to the array
         valid = (target != 255)
         n_valid = np.sum(valid)
@@ -276,7 +289,7 @@ def evaluate(
     eval_result['mIoU'] = np.mean(jac)
     print('Evaluation of semantic segmentation ')
     print('mIoU is %.2f' % (100*eval_result['mIoU']))
-    return eval_result
+    return eval_result, match
 
 
 if __name__ == '__main__':

@@ -3,11 +3,55 @@ defaults:
   - base
   - _self_
 
-name: 'eval'
-job_type: 'eval'
+name: 'debug'
+job_type: 'train'
 
-segments_dir: "/data_q1_d/extra-storage/found_new/data/VOC2012/semantic_segmentations/crf/fixed/segmaps_e2_d8_pca_32"
-data_is_already_clustered: True
-kmeans:
-  num_trials: 1
-  pca_dim: 32  # null
+unfrozen_backbone_layers: -1
+model: 
+  num_classes: ${data.num_classes}
+
+checkpoint:
+  resume: null
+  resume_training: True
+  resume_optimizer_only: False
+
+checkpoint:
+  resume: null
+  resume_training: True
+  resume_optimizer_only: False
+
+# Exponential moving average of model parameters
+ema:
+  use_ema: True
+  decay: 0.999  # 0.99996 for EfficientNet
+  update_every: 100
+
+# Training steps/epochs
+max_train_steps: 100_000
+max_train_epochs: null
+
+# Optimization
+lr: 0.005
+gradient_accumulation_steps: 1
+optimizer:
+  scale_learning_rate_with_batch_size: False
+  clip_grad_norm: null
+
+  # Transformers optimizer
+  kind: 'transformers'
+  name: 'Adafactor'
+  kwargs:
+      weight_decay: 0.0
+      scale_parameter: True
+      relative_step: False
+
+# Learning rate scheduling
+scheduler:
+
+  # Transformers scheduler
+  kind: 'transformers'
+  stepwise: True
+  kwargs:
+    name: linear
+    num_warmup_steps: 0
+    num_training_steps: ${max_train_steps}

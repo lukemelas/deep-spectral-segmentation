@@ -27,7 +27,7 @@ data:
     download: False
   loader:
     batch_size: 16
-    num_workers: 8
+    num_workers: 4
     pin_memory: False
   transform:
     resize_size: 256
@@ -35,20 +35,10 @@ data:
     img_mean: [0.485, 0.456, 0.406]
     img_std: [0.229, 0.224, 0.225]
 
-data_is_already_clustered: True
-kmeans:
-  num_trials: 1
-  pca_dim: 32  # null
-
-# How to create masks
-segments_dir: "/data_q1_d/extra-storage/found_new/data/VOC2012/semantic_segmentations/crf/fixed/segmaps_e2_d8_pca_32"
-
-model: {}
-
-checkpoint:
-  resume: null
-  resume_training: True
-  resume_optimizer_only: False
+# Path to labels
+# Example: "/data_q1_d/extra-storage/found_new/data/VOC2012/semantic_segmentations/crf/fixed/segmaps_e2_d8_pca_32"
+# segments_dir: ?
+segments_dir: /data_q1_d/extra-storage/found_new/data/VOC2012/semantic_segmentations/crf/fixed_15/segmaps_e2_d5_pca_0_s12
 
 logging:
   print_freq: 50

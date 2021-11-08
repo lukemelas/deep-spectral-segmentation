@@ -21,8 +21,6 @@ import util as utils
 from model import get_model
 from dataset import get_datasets
 
-torch.backends.cudnn.benchmark = False
-
 
 @hydra.main(config_path='config', config_name='train')
 def main(cfg: DictConfig):

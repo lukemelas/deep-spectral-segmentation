@@ -1,60 +1,103 @@
 from pathlib import Path
 from PIL import Image
 from typing import Any, Callable, Dict, Optional, Tuple, List
-import cv2
-from torchvision.datasets.voc import _VOCBase
+from pathlib import Path
 import torch
 import numpy as np
+import cv2
+from torchvision.datasets.voc import (
+    VisionDataset, warnings, verify_str_arg, DATASET_YEAR_DICT, os, download_and_extract_archive
+)
 
 
-class VOCSegmentation(_VOCBase):
-    """`Pascal VOC <http://host.robots.ox.ac.uk/pascal/VOC/>`_ Segmentation Dataset.
-
-    Args:
-        root (string): Root directory of the VOC Dataset.
-        year (string, optional): The dataset year, supports years ``"2007"`` to ``"2012"``.
-        image_set (string, optional): Select the image_set to use, ``"train"``, ``"trainval"`` or ``"val"``. If
-            ``year=="2007"``, can also be ``"test"``.
-        download (bool, optional): If true, downloads the dataset from the internet and
-            puts it in root directory. If dataset is already downloaded, it is not
-            downloaded again.
-        transform (callable, optional): A function/transform that  takes in an PIL image
-            and returns a transformed version. E.g, ``transforms.RandomCrop``
-        target_transform (callable, optional): A function/transform that takes in the
-            target and transforms it.
-        transforms (callable, optional): A function/transform that takes input sample and its target as entry
-            and returns a transformed version.
-    """
+class VOCSegmentationWithPseudolabelsBase(VisionDataset):
 
     _SPLITS_DIR = "Segmentation"
     _TARGET_DIR = "SegmentationClass"
     _TARGET_FILE_EXT = ".png"
 
+    def __init__(
+        self,
+        root: str,
+        year: str = "2012",
+        image_set: str = "train",
+        download: bool = False,
+        transform: Optional[Callable] = None,
+        target_transform: Optional[Callable] = None,
+        transforms: Optional[Callable] = None,
+    ):
+        super().__init__(root, transforms, transform, target_transform)
+        if year == "2007-test":
+            if image_set == "test":
+                warnings.warn(
+                    "Acessing the test image set of the year 2007 with year='2007-test' is deprecated. "
+                    "Please use the combination year='2007' and image_set='test' instead."
+                )
+                year = "2007"
+            else:
+                raise ValueError(
+                    "In the test image set of the year 2007 only image_set='test' is allowed. "
+                    "For all other image sets use year='2007' instead."
+                )
+        self.year = year
+
+        valid_image_sets = ["train", "trainval", "val"]
+        if year == "2007":
+            valid_image_sets.append("test")
+        self.image_set = verify_str_arg(image_set, "image_set", valid_image_sets)
+
+        key = "2007-test" if year == "2007" and image_set == "test" else year
+        dataset_year_dict = DATASET_YEAR_DICT[key]
+
+        self.url = dataset_year_dict["url"]
+        self.filename = dataset_year_dict["filename"]
+        self.md5 = dataset_year_dict["md5"]
+
+        base_dir = dataset_year_dict["base_dir"]
+        voc_root = os.path.join(self.root, base_dir)
+
+        if download:
+            download_and_extract_archive(self.url, self.root, filename=self.filename, md5=self.md5)
+
+        if not os.path.isdir(voc_root):
+            raise RuntimeError("Dataset not found or corrupted. You can use download=True to download it")
+
+        splits_dir = os.path.join(voc_root, "ImageSets", self._SPLITS_DIR)
+        split_f = os.path.join(splits_dir, image_set.rstrip("\n") + ".txt")
+
+        ######################### NEW #########################
+        ######################### NEW #########################
+        if self.image_set == 'train':  # everything except val
+            image_dir = os.path.join(voc_root, "JPEGImages")
+            with open(os.path.join(splits_dir, "val.txt"), "r") as f:
+                val_file_stems = set([stem.strip() for stem in f.readlines()])
+            all_image_paths = [p for p in Path(image_dir).iterdir()]
+            train_image_paths = [str(p) for p in all_image_paths if p.stem not in val_file_stems]
+            self.images = sorted(train_image_paths)
+            # For the targets, we will just replicate the same target however many times
+            target_dir = os.path.join(voc_root, self._TARGET_DIR)
+            self.targets = [str(next(Path(target_dir).iterdir()))] * len(self.images)
+            
+        ######################### END NEW #########################
+        ######################### END NEW #########################
+        
+        else:
+
+            with open(os.path.join(split_f), "r") as f:
+                file_names = [x.strip() for x in f.readlines()]
+
+            image_dir = os.path.join(voc_root, "JPEGImages")
+            self.images = [os.path.join(image_dir, x + ".jpg") for x in file_names]
+
+            target_dir = os.path.join(voc_root, self._TARGET_DIR)
+            self.targets = [os.path.join(target_dir, x + self._TARGET_FILE_EXT) for x in file_names]
+
+            assert len(self.images) == len(self.targets)
+
     @property
     def masks(self) -> List[str]:
         return self.targets
 
-    def __getitem__(self, index: int) -> Tuple[Any, Any]:
-        """
-        Args:
-            index (int): Index
-
-        Returns:
-            tuple: (image, target) where target is the image segmentation.
-        """
-        img_path = self.images[index]
-        img = Image.open(self.images[index]).convert("RGB")
-        target = Image.open(self.masks[index])
-        metadata = {'id': Path(self.images[index]).stem, 'path': self.images[index], 'shape': (img.size[1], img.size[0])}
-
-        if self.transforms is not None:
-            img, target = self.transforms(img, target)
-
-        return img, target, metadata
-
-
-class VOCSegmentationWithPseudolabelsBase(VOCSegmentation):
-    
     def _prepare_label_map(self, label_map):
         if label_map is not None:
             self.label_map_fn = np.vectorize(label_map.__getitem__)
@@ -94,6 +137,9 @@ class VOCSegmentationWithPseudolabelsBase(VOCSegmentation):
         if self.label_map_fn is not None:
             pseudolabel = self.label_map_fn(pseudolabel)
         return (img, target, pseudolabel, metadata)
+
+    def __len__(self) -> int:
+        return len(self.images)
 
 
 class VOCSegmentationWithPseudolabels(VOCSegmentationWithPseudolabelsBase):

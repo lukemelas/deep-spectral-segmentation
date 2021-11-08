@@ -5,7 +5,7 @@ defaults:
 
 name: 'debug'
 job_type: 'train'
-eval_every: 1_000_000
+eval_every: 2
 checkpoint_at: [2, 4, 8, 16, 32, 48, 64, 80, 96, 128, 160, 224]
 
 unfrozen_backbone_layers: 1  # -1 to disable
@@ -24,7 +24,7 @@ ema:
   update_every: 100
 
 # Training steps/epochs
-max_train_steps: 20_000
+max_train_steps: 50_000
 max_train_epochs: null
 
 # Optimization

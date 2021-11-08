@@ -1,28 +1,30 @@
-program: main.py
-project: misc
+program: train.py
+project: found
 method: grid
 metric:
-  goal: minimize
-  name: val_loss
+  goal: maximize
+  name: mIoU
 parameters:
   lr:
-    values: [1e-5, 2e-5, 4e-5, 1e-4, 2e-4, 4e-4, 8e-4, 15e-4, 30e-4]
+    values: [1e-3, 2e-3, 3e-3, 5e-3, 8e-3, 5e-4, 1e-2, 2e-4, 2e-2, 3e-2, 8e-4, 5e-2, 4e-3, 8e-5]
+  unfrozen_backbone_layers:
+    values: [1, -1, 2]
   # NOTE: If you modify `max_train_steps` then you should probably also 
   # modify scheduler.kwargs.num_training_steps
-  max_train_epochs:
-    value: 1
-  gradient_accumulation_steps:
-    value: 4
-  data.loader.batch_size:
-    value: 56
-  max_train_steps: 
-    value: 30000
-  model.kind:
-    value: "timm"
-  model.variant: 
-    value: "vit_base_patch16_224_in21k"
-  wandb:
-    value: True
+  # max_train_epochs:
+  #   value: 1
+  # gradient_accumulation_steps:
+  #   value: 4
+  # data.loader.batch_size:
+  #   value: 56
+  # max_train_steps: 
+  #   value: 30000
+  # model.kind:
+  #   value: "timm"
+  # model.variant: 
+  #   value: "vit_base_patch16_224_in21k"
+  # wandb:
+  #   value: True
 # early_terminate:
 #   type: hyperband
 #   s: 2

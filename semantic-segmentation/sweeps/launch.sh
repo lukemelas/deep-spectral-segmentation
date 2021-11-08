@@ -4,7 +4,7 @@
 
 ## Session name
 NAME=sweep_seg
-COMMAND="wandb agent lukemelas2/found/8t6z5obk"
+COMMAND="wandb agent lukemelas2/found/zz3keqkp"
 
 ## Create tmux session
 tmux new-session -d -s ${NAME}

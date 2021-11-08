@@ -178,8 +178,8 @@ def train_one_epoch(
     model.train()
     log_header = f'Epoch: [{train_state.epoch}]'
     metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('step', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.0f}'))
+    metric_logger.add_meter('step', utils.SmoothedValue(window_size=1, fmt='{value:.0f}'))
+    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     progress_bar = metric_logger.log_every(dataloader_train, cfg.logging.print_freq, header=log_header)
 
     # Train

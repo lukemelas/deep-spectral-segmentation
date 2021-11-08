@@ -24,7 +24,7 @@ ema:
   update_every: 100
 
 # Training steps/epochs
-max_train_steps: 50_000
+max_train_steps: 5_000  # 20_000
 max_train_epochs: null
 
 # Optimization

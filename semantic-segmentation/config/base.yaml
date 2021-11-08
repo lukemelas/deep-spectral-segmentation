@@ -26,8 +26,8 @@ data:
     image_set: "val"
     download: False
   loader:
-    batch_size: 24
-    num_workers: 4
+    batch_size: 144  # 24
+    num_workers: 8
     pin_memory: False
   transform:
     resize_size: 256

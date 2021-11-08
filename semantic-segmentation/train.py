@@ -45,8 +45,9 @@ def main(cfg: DictConfig):
     model = get_model(**cfg.model)
 
     # Freeze layers, if desired
-    if cfg.unfrozen_backbone_layers > 0:
-        for module in list(model.backbone.children())[:-cfg.unfrozen_backbone_layers]:
+    if cfg.unfrozen_backbone_layers >= 0:
+        num_unfrozen = None if (cfg.unfrozen_backbone_layer == 0) else (-cfg.unfrozen_backbone_layers)
+        for module in list(model.backbone.children())[:num_unfrozen]:
             for p in module.parameters():
                 p.requires_grad_(False)
 

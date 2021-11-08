@@ -5,10 +5,12 @@ defaults:
 
 name: 'debug'
 job_type: 'train'
-eval_every: 2
+fp16: True
+wandb: True
+eval_every: 1
 checkpoint_at: [2, 4, 8, 16, 32, 48, 64, 80, 96, 128, 160, 224]
 
-unfrozen_backbone_layers: 1  # -1 to disable
+unfrozen_backbone_layers: 1  # -1 to train all, 0 to freeze entirely, > 0 to specify
 model: 
   num_classes: ${data.num_classes}
 
@@ -19,9 +21,9 @@ checkpoint:
 
 # Exponential moving average of model parameters
 ema:
-  use_ema: False
-  decay: 0.999  # 0.99996 for EfficientNet
-  update_every: 100
+  use_ema: False  # New! Check if this makes any difference
+  decay: 0.999
+  update_every: 20
 
 # Training steps/epochs
 max_train_steps: 5_000  # 20_000

@@ -1,0 +1,7 @@
+WIN0 (lr=5e-3, unfrozen=1):  [epoch 21] 39.79 
+WIN1 (lr=5e-3, unfrozen=-1): [epoch 33] 36.84 
+WIN2 (lr=5e-3, unfrozen=2):  [epoch 21] 38.49 
+WIN3 (lr=2e-3, unfrozen=1):  [epoch 21] 39.27 
+WIN4 (lr=2e-3, unfrozen=-1): [epoch 27] 38.51 
+WIN5 (lr=2e-3, unfrozen=2):  [epoch 21] 38.92 
+WIN6 (lr=1e-3, unfrozen=1):  [epoch 23] 39.37 

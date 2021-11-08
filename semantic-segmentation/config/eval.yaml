@@ -1,0 +1,13 @@
+# @package _global_
+defaults:
+  - base
+  - _self_
+
+name: 'eval'
+job_type: 'eval'
+
+segments_dir: "/data_q1_d/extra-storage/found_new/data/VOC2012/semantic_segmentations/crf/fixed/segmaps_e2_d8_pca_32"
+data_is_already_clustered: True
+kmeans:
+  num_trials: 1
+  pca_dim: 32  # null

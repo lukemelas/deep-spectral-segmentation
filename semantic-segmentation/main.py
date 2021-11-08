@@ -31,7 +31,7 @@ from datasets.voc import VOCSegmentation, VOCSegmentationWithPseudolabels
 from model import get_model
 
 
-@hydra.main(config_path='config', config_name='default')
+@hydra.main(config_path='config', config_name='eval')
 def main(cfg: DictConfig):
 
     # Accelerator

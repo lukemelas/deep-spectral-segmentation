@@ -415,7 +415,6 @@ def extract_bbox_features(
         features_crops = []
         for (xmin, ymin, xmax, ymax) in bboxes:
             image_crop = image[:, :, ymin:ymax, xmin:xmax]
-            print(image_crop.shape, (xmin, ymin, xmax, ymax))
             features_crop = model(image_crop).squeeze().cpu()
             features_crops.append(features_crop)
         bbox_dict['features'] = torch.stack(features_crops, dim=0)
@@ -429,13 +428,14 @@ def extract_bbox_clusters(
     bbox_features_file: str,
     output_file: str,
     num_clusters: int = 21, 
+    seed: int = 0, 
     pca_dim: Optional[int] = 32,
 ):
     """
     Example:
         python extract.py extract_bbox_clusters \
             --bbox_features_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_features_e2_d5.pth" \
-            --pca_dim 32 --num_clusters 20 \
+            --pca_dim 32 --num_clusters 20 --seed 0 \
             --output_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_clusters_e2_d5_pca_32.pth" \
     """
 
@@ -458,7 +458,7 @@ def extract_bbox_clusters(
 
     # Cluster: K-Means
     print(f'Computing K-Means clustering with {num_clusters} clusters')
-    kmeans = MiniBatchKMeans(n_clusters=num_clusters, batch_size=4096, max_iter=1000)
+    kmeans = MiniBatchKMeans(n_clusters=num_clusters, batch_size=4096, max_iter=5000, random_state=seed)
     clusters = kmeans.fit_predict(all_features)
     
     # Print 
@@ -507,6 +507,10 @@ def extract_semantic_segmentations(
         # Load segmentation as tensor
         segmap_path = str(Path(segmentations_dir) / f'{image_id}.png')
         segmap = np.array(Image.open(segmap_path))
+        # Check if the segmap is a binary file with foreground pixels saved as 255 instead of 1
+        # this will be the case for some of our baselines
+        if set(np.unique(segmap).tolist()).issubset({0, 255}):
+            segmap[segmap == 255] = 1  
         # Semantic map
         if not len(bbox_dict['segment_indices']) == len(bbox_dict['clusters'].tolist()):
             import pdb

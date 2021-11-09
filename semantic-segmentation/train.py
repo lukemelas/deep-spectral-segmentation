@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 from PIL import Image
 import numpy as np
+from omegaconf.base import Metadata
 import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -16,6 +17,7 @@ import hydra
 from omegaconf import OmegaConf, DictConfig
 import wandb
 from tqdm import tqdm
+import albumentations as A
 
 import util as utils
 from model import get_model
@@ -46,7 +48,7 @@ def main(cfg: DictConfig):
 
     # Freeze layers, if desired
     if cfg.unfrozen_backbone_layers >= 0:
-        num_unfrozen = None if (cfg.unfrozen_backbone_layer == 0) else (-cfg.unfrozen_backbone_layers)
+        num_unfrozen = None if (cfg.unfrozen_backbone_layers == 0) else (-cfg.unfrozen_backbone_layers)
         for module in list(model.backbone.children())[:num_unfrozen]:
             for p in module.parameters():
                 p.requires_grad_(False)
@@ -117,8 +119,9 @@ def main(cfg: DictConfig):
     print(f'    Training state = {train_state}')
 
     # Evaluate masks before training
-    print('Evaluating masks before training...')
-    evaluate(**kwargs, evaluate_dataset_pseudolabels=True) # <-- to eval the masks
+    if cfg.get('eval_masks_before_training', True):
+        print('Evaluating masks before training...')
+        evaluate(**kwargs, evaluate_dataset_pseudolabels=True) # <-- to eval the masks
 
     # Training loop
     while True:
@@ -128,17 +131,17 @@ def main(cfg: DictConfig):
 
         # Save checkpoint on only 1 process
         if accelerator.is_local_main_process:
-            print('Saving checkpoint...')
             checkpoint_dict = {
                 'model': accelerator.unwrap_model(model).state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
                 'epoch': train_state.epoch,
-                'steps': train_state.step,
+                'step': train_state.step,
                 'best_val': train_state.best_val,
                 'model_ema': model_ema.state_dict() if model_ema else {},
                 'cfg': cfg
             }
+            print(f'Saved checkpoint to {str(Path(".").resolve())}')
             accelerator.save(checkpoint_dict, 'checkpoint-latest.pth')
             if train_state.epoch in cfg.checkpoint_at:
                 accelerator.save(checkpoint_dict, f'checkpoint-{train_state.epoch:04d}.pth')
@@ -184,23 +187,47 @@ def train_one_epoch(
     progress_bar = metric_logger.log_every(dataloader_train, cfg.logging.print_freq, header=log_header)
 
     # Train
-    for i, (inputs, _targets, pseudolabels, _metadata) in enumerate(progress_bar):
+    for i, (batch_nogeo, batch_geo, metadata) in enumerate(progress_bar):
         if i >= cfg.get('limit_train_batches', math.inf):
             break
 
-        # print(inputs.shape)  # TODO: remove
-        # print(_targets.shape)
-        # print(pseudolabels.shape)
-        # import pdb
-        # pdb.set_trace()
-
+        #####################
+        #### Contrastive ####
+        #####################
+        # Unpack
+        images_geo, _, pseudolabels_geo = batch_geo
+        images_nogeo, _, pseudolabels_nogeo = batch_nogeo
         # Forward
-        output = model(inputs)
-        sup_loss = F.cross_entropy(output, pseudolabels)
-        loss = sup_loss
+        output_geo = model(images_geo)  # (B, C, H, W)
+        with torch.no_grad():
+            output_nogeo = model(images_nogeo)  # (B, C, H, W)
+        # Cross-entropy loss
+        sup_loss =  F.cross_entropy(output_geo, pseudolabels_geo)
+        # Consistency loss
+        if cfg.lambda_contrastive > 0:
+            # Apply the same geometric transformation to the non-geometric output
+            output_nogeo_aligned_to_geo = []
+            for out in output_nogeo.cpu().permute(0, 2, 3, 1).numpy().astype(np.float32):
+                data_aligned = A.ReplayCompose.replay(metadata[i]['replay'], image=out)
+                out_aligned = torch.from_numpy(data_aligned['image']).permute(2, 0, 1)
+                output_nogeo_aligned_to_geo.append(out_aligned)
+            output_nogeo_aligned_to_geo = torch.stack(output_nogeo_aligned_to_geo, dim=0).to(accelerator.device)
+            assert output_nogeo_aligned_to_geo.shape == output_geo.shape
+            # Calculate loss -- for now, just MSE on the logits should work
+            con_loss = F.mse_loss(output_geo, output_nogeo_aligned_to_geo)
+        else:
+            con_loss = sup_loss * 0
+        # Sum
+        loss = sup_loss + con_loss * cfg.lambda_contrastive
+        #####################
+
+        # # Forward
+        # output = model(inputs)
+        # sup_loss = F.cross_entropy(output, pseudolabels)
+        # loss = sup_loss
 
         # Measure accuracy
-        acc1, acc5 = utils.accuracy(output, pseudolabels, topk=(1, 5))
+        acc1, acc5 = utils.accuracy(output_geo, pseudolabels_geo, topk=(1, 5))
 
         # Exit if loss is NaN
         loss_value = loss.item()
@@ -227,7 +254,7 @@ def train_one_epoch(
         # Logging
         log_dict = dict(
             lr=optimizer.param_groups[0]["lr"], step=train_state.step,
-            train_loss=loss_value, sup_loss=sup_loss,
+            train_loss=loss_value, sup_loss=sup_loss, con_loss=con_loss,
             train_top1=acc1[0], train_top5=acc5[0],
         )
         metric_logger.update(**log_dict)

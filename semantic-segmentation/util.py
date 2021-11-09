@@ -290,6 +290,8 @@ def resume_from_checkpoint(cfg, model, optimizer=None, scheduler=None, model_ema
             
     # Resume optimization state
     if cfg.checkpoint.resume_training and 'train' in cfg.job_type:
+        if 'steps' in checkpoint:
+            checkpoint['step'] = checkpoint['steps']
         assert {'optimizer', 'scheduler', 'epoch', 'step', 'best_val'}.issubset(set(checkpoint.keys()))
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])

@@ -1,7 +1,7 @@
-WIN0 (lr=5e-3, unfrozen=1):  [epoch 21] 39.79 
-WIN1 (lr=5e-3, unfrozen=-1): [epoch 33] 36.84 
-WIN2 (lr=5e-3, unfrozen=2):  [epoch 21] 38.49 
-WIN3 (lr=2e-3, unfrozen=1):  [epoch 21] 39.27 
-WIN4 (lr=2e-3, unfrozen=-1): [epoch 27] 38.51 
-WIN5 (lr=2e-3, unfrozen=2):  [epoch 21] 38.92 
-WIN6 (lr=1e-3, unfrozen=1):  [epoch 23] 39.37 
+WIN0 (lr=5e-3, unfrozen=1):  [epoch 21] 39.79 -- Final train state: TrainState(epoch=47, step=5076, best_val=0.3979444647598334)
+WIN1 (lr=5e-3, unfrozen=-1): [epoch 33] 36.84 -- Final train state: TrainState(epoch=47, step=5076, best_val=0.36842823731815905)
+WIN2 (lr=5e-3, unfrozen=2):  [epoch 21] 38.49 -- Final train state: TrainState(epoch=47, step=5076, best_val=0.38491178852190594)
+WIN3 (lr=2e-3, unfrozen=1):  [epoch 21] 39.27 -- Final train state: TrainState(epoch=47, step=5076, best_val=0.39335116357272865)
+WIN4 (lr=2e-3, unfrozen=-1): [epoch 27] 38.51 -- <did not get the final train state>
+WIN5 (lr=2e-3, unfrozen=2):  [epoch 21] 38.92 -- Final train state: TrainState(epoch=47, step=5076, best_val=0.38915678046702407)
+WIN6 (lr=1e-3, unfrozen=1):  [epoch 23] 39.37 -- Final train state: TrainState(epoch=47, step=5076, best_val=0.39371443007624635)

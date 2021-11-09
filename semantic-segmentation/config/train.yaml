@@ -5,7 +5,7 @@ defaults:
 
 name: 'debug'
 job_type: 'train'
-fp16: True
+fp16: False
 wandb: True
 eval_every: 1
 checkpoint_at: [2, 4, 8, 16, 32, 48, 64, 80, 96, 128, 160, 224]
@@ -13,6 +13,8 @@ checkpoint_at: [2, 4, 8, 16, 32, 48, 64, 80, 96, 128, 160, 224]
 unfrozen_backbone_layers: 1  # -1 to train all, 0 to freeze entirely, > 0 to specify
 model: 
   num_classes: ${data.num_classes}
+
+lambda_contrastive: 0.2
 
 checkpoint:
   resume: null
@@ -26,7 +28,7 @@ ema:
   update_every: 20
 
 # Training steps/epochs
-max_train_steps: 5_000  # 20_000
+max_train_steps: 4_000  # 5_000  # 20_000
 max_train_epochs: null
 
 # Optimization

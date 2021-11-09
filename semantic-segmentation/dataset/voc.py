@@ -173,14 +173,16 @@ class VOCSegmentationWithPseudolabelsContrastive(VOCSegmentationWithPseudolabels
         img, target, pseudolabel, metadata = self._load(index)
         if self.joint_transform is not None:
             # Join transform
-            data = self.joint_transform(image=img, mask1=target, mask2=pseudolabel)
+            data_nogeo = self.joint_transform(image=img, mask1=target, mask2=pseudolabel)
             # Geometric transform
-            data = self.geometric_transform(image=data['image'], mask1=data['mask1'], mask2=data['mask2'])
-            metadata['replay'] = data['replay']
+            data_geo = self.geometric_transform(image=data_nogeo['image'], mask1=data_nogeo['mask1'], mask2=data_nogeo['mask2'])
+            metadata['replay'] = data_geo['replay']
             # Separate transform
-            data = self.separate_transform(image=data['image'], mask1=data['mask1'], mask2=data['mask2'])
+            data_nogeo = self.separate_transform(image=data_nogeo['image'], mask1=data_nogeo['mask1'], mask2=data_nogeo['mask2'])
+            data_geo = self.separate_transform(image=data_geo['image'], mask1=data_geo['mask1'], mask2=data_geo['mask2'])
             # Unpack
-            img, target, pseudolabel = data['image'], data['mask1'], data['mask2']
-        return img, target.long(), pseudolabel.long(), metadata
+            img_nogeo, target_nogeo, pseudolabel_nogeo = data_nogeo['image'], data_nogeo['mask1'].long(), data_nogeo['mask2'].long()
+            img_geo, target_geo, pseudolabel_geo = data_geo['image'], data_geo['mask1'].long(), data_geo['mask2'].long()
+        return (img_nogeo, target_nogeo, pseudolabel_nogeo), (img_geo, target_geo, pseudolabel_geo), metadata
 
         

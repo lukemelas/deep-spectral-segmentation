@@ -6,9 +6,13 @@ metric:
   name: mIoU
 parameters:
   lr:
-    values: [2e-3, 1e-3, 5e-3, 3e-4, 5e-4, 1e-2]
+    values: [5e-4, 2e-4]  # value: 1e-3  # values: [2e-3, 1e-3, 5e-3, 3e-4, 5e-4, 1e-2]
   unfrozen_backbone_layers:
-    values: [1, 0]  # [1, -1, 2]
+    value: 1  # values: [1, 0]  # [1, -1, 2]
+  lambda_contrastive:
+    values: [0.5, 1.0, 2.0, 3.0] # [0.02, 0.05, 0.1, 0.15, 0.2, 0.4, 0.8]  # [1, 0]  # [1, -1, 2]
+  name:
+    value: "sweep2_lr_${lr}_layers_${unfrozen_backbone_layers}_lamcon_${lambda_contrastive}"
 command:
   - ${env}
   - ${interpreter}

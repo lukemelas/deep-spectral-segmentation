@@ -5,9 +5,8 @@ from pathlib import Path
 import torch
 import numpy as np
 import cv2
-from torchvision.datasets.voc import (
-    VisionDataset, warnings, verify_str_arg, DATASET_YEAR_DICT, os, download_and_extract_archive
-)
+import warnings
+from torchvision.datasets.voc import VisionDataset, verify_str_arg, DATASET_YEAR_DICT, os 
 
 
 class VOCSegmentationWithPseudolabelsBase(VisionDataset):
@@ -57,6 +56,7 @@ class VOCSegmentationWithPseudolabelsBase(VisionDataset):
         voc_root = os.path.join(self.root, base_dir)
 
         if download:
+            from torchvision.datasets.voc import download_and_extract_archive
             download_and_extract_archive(self.url, self.root, filename=self.filename, md5=self.md5)
 
         if not os.path.isdir(voc_root):

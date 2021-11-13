@@ -38,6 +38,44 @@ def get_deeplab_resnet(num_classes: int, name: str = 'deeplabv3plus', output_str
     return model
 
 
+def get_deeplab_vit(num_classes: int, backbone_name: str = 'vits16', name: str = 'deeplabv3plus'):
+
+    # Backbone
+    backbone = torch.hub.load('facebookresearch/dino:main', f'dino_{backbone_name}')
+
+    # Classifier
+    aspp_dilate = [12, 24, 36]
+    inplanes = low_level_planes = backbone.embed_dim
+    if name == 'deeplabv3plus':
+        classifier = DeepLabHeadV3Plus(inplanes, low_level_planes, num_classes, aspp_dilate)
+        DeepLab = DeepLabV3Plus
+    elif name == 'deeplabv3':
+        DeepLab = DeepLabV3  # TODO: this might also have to be DeepLabV3Plus, not sure
+        classifier = DeepLabHead(inplanes, num_classes, aspp_dilate)
+
+    # Wrap
+    backbone = VisionTransformerWrapper(backbone)
+    model = DeepLab(backbone, classifier)
+    return model
+
+
+class VisionTransformerWrapper(nn.Module):
+    def __init__(self, backbone):
+        super().__init__()
+        self.backbone = backbone
+
+    def forward(self, x):
+        # Forward
+        output = self.backbone.get_intermediate_layers(x, n=5)
+        # Reshaping
+        assert (len(output) == 5), f'{output.shape=}'
+        H_patch = x.shape[-2] // self.backbone.patch_embed.patch_size
+        W_patch = x.shape[-1] // self.backbone.patch_embed.patch_size
+        out_ll = output[0][:, 1:, :].transpose(-2, -1).unflatten(-1, (H_patch, W_patch))
+        out = output[-1][:, 1:, :].transpose(-2, -1).unflatten(-1, (H_patch, W_patch))
+        return {'low_level': out_ll, 'out': out}
+
+
 class DeepLabHeadV3Plus(nn.Module):
     def __init__(self, in_channels, low_level_channels, num_classes, aspp_dilate=[12, 24, 36]):
         super(DeepLabHeadV3Plus, self).__init__()
@@ -88,5 +126,8 @@ class DeepLabV3Plus(nn.Module):
 
 
 if __name__ == "__main__":
-    model = get_deeplab_resnet(21)
+    model = get_deeplab_vit(21)  # get_deeplab_resnet(21)
+    x = torch.randn(2, 3, 224, 224)
+    y = model(x)
+    print(y.shape)
     import pdb; pdb.set_trace()

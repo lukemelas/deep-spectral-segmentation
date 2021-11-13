@@ -16,12 +16,12 @@ data:
   num_classes: 20
   dataset: pascal
   train_kwargs:
-    root: /data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012
+    root: ${oc.env:HOME}/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012
     year: "2012"
     image_set: train
     download: False
   val_kwargs:
-    root: "/data_q1_d/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012"
+    root: ${oc.env:HOME}/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012
     year: "2012"
     image_set: "val"
     download: False
@@ -38,7 +38,8 @@ data:
 # Path to labels
 # Example: "/data_q1_d/extra-storage/found_new/data/VOC2012/semantic_segmentations/crf/fixed/segmaps_e2_d8_pca_32"
 # segments_dir: ?
-segments_dir: /data_q1_d/extra-storage/found_new/data/VOC2012/semantic_segmentations/crf/fixed_15/segmaps_e2_d5_pca_0_s12
+# segments_dir: /data_q1_d/extra-storage/found_new/data/VOC2012/semantic_segmentations/crf/fixed_15/segmaps_e2_d5_pca_0_s12
+segments_dir: ${oc.env:FOUND_NEW_DIR}/data/VOC2012/semantic_segmentations/crf/fixed_15/segmaps_e2_d5_pca_0_s12
 
 logging:
   print_freq: 50

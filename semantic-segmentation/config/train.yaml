@@ -12,6 +12,7 @@ checkpoint_at: [2, 4, 8, 16, 32, 48, 64, 80, 96, 128, 160, 224]
 
 unfrozen_backbone_layers: 1  # -1 to train all, 0 to freeze entirely, > 0 to specify
 model: 
+  name: resnet50  # vits16
   num_classes: ${data.num_classes}
 
 lambda_contrastive: 0.2
@@ -25,10 +26,10 @@ checkpoint:
 ema:
   use_ema: False  # New! Check if this makes any difference
   decay: 0.999
-  update_every: 20
+  update_every: 10
 
 # Training steps/epochs
-max_train_steps: 4_000  # 5_000  # 20_000
+max_train_steps: 3_500  # 5_000  # 20_000
 max_train_epochs: null
 
 # Optimization

@@ -58,15 +58,6 @@ def main(cfg: DictConfig):
     print(f'Backbone parameters (total): {sum(p.numel() for p in model.backbone.parameters()):_d}')
     print(f'Backbone parameters (train): {sum(p.numel() for p in model.backbone.parameters() if p.requires_grad):_d}')
 
-    # Exponential moving average of model parameters
-    if cfg.ema.use_ema:
-        from torch_ema import ExponentialMovingAverage
-        model_ema = ExponentialMovingAverage(model.parameters(), decay=cfg.ema.decay)
-        print('Initialized model EMA')
-    else:
-        model_ema = None
-        print('Not using model EMA')
-
     # Optimizer and scheduler
     optimizer = utils.get_optimizer(cfg, model, accelerator)
     scheduler = utils.get_scheduler(cfg, optimizer)
@@ -87,6 +78,15 @@ def main(cfg: DictConfig):
 
     # Setup
     model, optimizer, dataloader_train = accelerator.prepare(model, optimizer, dataloader_train)
+
+    # Exponential moving average of model parameters
+    if cfg.ema.use_ema:
+        from torch_ema import ExponentialMovingAverage
+        model_ema = ExponentialMovingAverage((p for p in model.parameters() if p.requires_grad), decay=cfg.ema.decay)
+        print('Initialized model EMA')
+    else:
+        model_ema = None
+        print('Not using model EMA')
 
     # Shared training, evaluation, and visualization args
     kwargs = dict(
@@ -207,8 +207,10 @@ def train_one_epoch(
         if cfg.lambda_contrastive > 0:
             # Apply the same geometric transformation to the non-geometric output
             output_nogeo_aligned_to_geo = []
-            for out in output_nogeo.cpu().permute(0, 2, 3, 1).numpy().astype(np.float32):
-                data_aligned = A.ReplayCompose.replay(metadata[i]['replay'], image=out)
+            output_nogeo = output_nogeo.cpu().permute(0, 2, 3, 1).numpy().astype(np.float32)
+            assert len(output_nogeo) == len(metadata)
+            for out, met in zip(output_nogeo, metadata):
+                data_aligned = A.ReplayCompose.replay(met['replay'], image=out)
                 out_aligned = torch.from_numpy(data_aligned['image']).permute(2, 0, 1)
                 output_nogeo_aligned_to_geo.append(out_aligned)
             output_nogeo_aligned_to_geo = torch.stack(output_nogeo_aligned_to_geo, dim=0).to(accelerator.device)
@@ -249,7 +251,7 @@ def train_one_epoch(
 
             # Model EMA
             if model_ema is not None and (train_state.epoch % cfg.ema.update_every) == 0:
-                model_ema.update(model.parameters())
+                model_ema.update((p for p in model.parameters() if p.requires_grad))
 
         # Logging
         log_dict = dict(

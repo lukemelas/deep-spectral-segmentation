@@ -3,8 +3,11 @@
 ### >>> ./sweeps/launch.sh
 
 ## Session name
-NAME=sweep3
-COMMAND="wandb agent lukemelas2/found/1v0ghjm3"
+NAME=sweep6
+COMMAND="wandb agent lukemelas2/found/${1}"
+
+## Print
+echo "Launching sweep ${1} on tmux session ${NAME}"
 
 ## Create tmux session
 tmux new-session -d -s ${NAME}

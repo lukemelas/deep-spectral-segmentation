@@ -13,6 +13,8 @@ import sys
 import time
 import torch
 from torch.utils.data import Dataset
+from pymatting.util.kdtree import knn
+import scipy.sparse
 
 
 def get_model(name: str):
@@ -178,3 +180,45 @@ def parallel_process(inputs: Iterable, fn: Callable, multiprocessing: int = 0):
         for inp in tqdm(inputs):
             fn(inp)
     print(f'Finished in {time.time() - start:.1f}s')
+
+
+def knn_affinity(image, n_neighbors=[20, 10], distance_weights=[2.0, 0.1]):
+
+    h, w = image.shape[:2]
+    r, g, b = image.reshape(-1, 3).T
+    n = w * h
+
+    x = np.tile(np.linspace(0, 1, w), h)
+    y = np.repeat(np.linspace(0, 1, h), w)
+
+    i, j = [], []
+
+    for k, distance_weight in zip(n_neighbors, distance_weights):
+        f = np.stack(
+            [r, g, b, distance_weight * x, distance_weight * y],
+            axis=1,
+            out=np.zeros((n, 5), dtype=np.float32),
+        )
+
+        distances, neighbors = knn(f, f, k=k)
+
+        i.append(np.repeat(np.arange(n), k))
+        j.append(neighbors.flatten())
+
+    ij = np.concatenate(i + j)
+    ji = np.concatenate(j + i)
+    coo_data = np.ones(2 * sum(n_neighbors) * n)
+
+    # This is our affinity matrix
+    W = scipy.sparse.csr_matrix((coo_data, (ij, ji)), (n, n))
+    return W
+
+
+def get_diagonal(W: scipy.sparse.csr_matrix, threshold: float = 1e-12):
+    # See normalize_rows in pymatting.util.util
+    from pymatting.util.util import row_sum
+    D = row_sum(W)
+    D[D < threshold] = 1.0  # Prevent division by zero.
+    D = scipy.sparse.diags(D)
+    return D
+

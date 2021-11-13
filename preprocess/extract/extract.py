@@ -42,7 +42,7 @@ def extract_features(
         python extract.py extract_features \
             --images_list "./data/VOC2012/lists/images.txt" \
             --images_root "./data/VOC2012/images" \
-            --output_dir "./data/VOC2012/features" \
+            --output_dir "./data/VOC2012/features/dino_vits16" \
             --model_name dino_vits16 \
             --batch_size 1
     """
@@ -85,16 +85,16 @@ def extract_features(
         out = accelerator.unwrap_model(model).get_intermediate_layers(images)[0].squeeze(0)
 
         # Reshape
-        output_dict['out'] = out
+        # output_dict['out'] = out
         output_qkv = feat_out["qkv"].reshape(B, T, 3, num_heads, -1 // num_heads).permute(2, 0, 3, 1, 4)
-        output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+        # output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
         output_dict['k'] = output_qkv[1].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
-        output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+        # output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
         output_dict['indices'] = indices[0]
         output_dict['file'] = files[0]
         output_dict['id'] = id = Path(files[0]).stem
         output_dict['model_name'] = model_name
-        output_dict['patch_size'] = 16
+        output_dict['patch_size'] = patch_size
         output_dict['shape'] = (B, C, H, W)
         output_dict = {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in output_dict.items()}
 
@@ -111,7 +111,9 @@ def _extract_eig(
     K: int, 
     images_root: str,
     output_dir: str,
-    which_matrix: str = 'laplacian'
+    which_matrix: str = 'laplacian',
+    image_downsample_factor: int = 4,
+    image_color_lambda: float = 10,
 ):
     index, features_file = inp
 
@@ -126,21 +128,21 @@ def _extract_eig(
 
     # Load affinity matrix
     k_feats = data_dict['k'].squeeze()
-    A = k_feats @ k_feats.T
 
     # Eigenvectors of affinity matrix
     if which_matrix == 'affinity_torch':
+        A = k_feats @ k_feats.T
         eigenvalues, eigenvectors = torch.eig(A, eigenvectors=True)
     
     # Eigenvectors of affinity matrix with scipy
     elif which_matrix == 'affinity':
-        A = A.cpu().numpy()
+        A = (k_feats @ k_feats.T).cpu().numpy()
         eigenvalues, eigenvectors = eigsh(A, which='LM', k=K)
         eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,))
     
     # Eigenvectors of laplacian matrix
     elif which_matrix == 'laplacian':
-        A = A.cpu().numpy()
+        A = (k_feats @ k_feats.T).cpu().numpy()
         _W_semantic = (A * (A > 0))
         _W_semantic = _W_semantic / _W_semantic.max()
         diag = _W_semantic @ np.ones(_W_semantic.shape[0])
@@ -150,6 +152,42 @@ def _extract_eig(
             eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, sigma=0, which='LM', M=D)
         except:
             eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, which='SM', M=D)
+        eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
+
+    # Eigenvectors of matting laplacian matrix
+    elif which_matrix == 'matting_laplacian':
+
+        # Get sizes
+        B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
+        H_pad_lr, W_pad_lr = H_pad // image_downsample_factor, W_pad // image_downsample_factor
+        
+        # Load image
+        image_file = str(Path(images_root) / f'{image_id}.jpg')
+        image_lr = Image.open(image_file).resize((W_pad_lr, H_pad_lr), Image.BILINEAR)
+        image_lr = np.array(image_lr) / 255.
+
+        # Get color affinities
+        W_lr = utils.knn_affinity(image_lr / 255)
+
+        # Get semantic affinities
+        k_feats_lr = F.interpolate(
+            k_feats.T.reshape(1, -1, H_patch, W_patch), 
+            size=(H_pad_lr, W_pad_lr), mode='bilinear', align_corners=False
+        ).reshape(-1, H_pad_lr * W_pad_lr).T
+        A_sm_lr = k_feats_lr @ k_feats_lr.T
+        W_sm_lr = (A_sm_lr * (A_sm_lr > 0)).cpu().numpy()
+        W_sm_lr = W_sm_lr / W_sm_lr.max()
+
+        # Combine
+        W_color = np.array(W_lr.todense().astype(np.float32))
+        W_comb = W_sm_lr + W_color * image_color_lambda  # combination
+        D_comb = utils.get_diagonal(W_comb)
+
+        # Extract eigenvectors
+        try:
+            eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, sigma=0, which='LM', M=D_comb)
+        except:
+            eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, which='SM', M=D_comb)
         eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
 
     # Sign ambiguity
@@ -167,19 +205,22 @@ def extract_eigs(
     features_dir: str,
     output_dir: str,
     which_matrix: str = 'laplacian',
-    K: int = 5,
+    K: int = 20,
+    image_downsample_factor: int = 4,
+    image_color_lambda: float = 10,
     multiprocessing: int = 0
 ):
     """
     Example:
     python extract.py extract_eigs \
         --images_root "./data/VOC2012/images" \
-        --features_dir "./data/VOC2012/features" \
+        --features_dir "./data/VOC2012/features/dino_vits16" \
         --which_matrix "laplacian" \
         --output_dir "./data/VOC2012/eigs/laplacian" \
     """
     utils.make_output_dir(output_dir)
-    fn = partial(_extract_eig, K=K, which_matrix=which_matrix, images_root=images_root, output_dir=output_dir)
+    fn = partial(_extract_eig, K=K, which_matrix=which_matrix, images_root=images_root, output_dir=output_dir, 
+                 image_downsample_factor=image_downsample_factor, image_color_lambda=image_color_lambda)
     inputs = list(enumerate(sorted(Path(features_dir).iterdir())))
     utils.parallel_process(inputs, fn, multiprocessing)
 
@@ -250,7 +291,7 @@ def extract_multi_region_segmentations(
     """
     Example:
     python extract.py extract_multi_region_segmentations \
-        --features_dir "./data/VOC2012/features" \
+        --features_dir "./data/VOC2012/features/dino_vits16" \
         --eigs_dir "./data/VOC2012/eigs/laplacian" \
         --output_dir "./data/VOC2012/multi_region_segmentation/fixed" \
     """
@@ -299,7 +340,7 @@ def extract_single_region_segmentations(
     """
     Example:
     python extract.py extract_single_region_segmentations \
-        --features_dir "./data/VOC2012/features" \
+        --features_dir "./data/VOC2012/features/dino_vits16" \
         --eigs_dir "./data/VOC2012/eigs/laplacian" \
         --output_dir "./data/VOC2012/single_region_segmentation/patches" \
     """
@@ -364,7 +405,7 @@ def extract_bboxes(
     Note: There is no need for multiprocessing here, as it is more convenient to save 
     the entire output as a single JSON file. Example:
     python extract.py extract_bboxes \
-        --features_dir "./data/VOC2012/features" \
+        --features_dir "./data/VOC2012/features/dino_vits16" \
         --segmentations_dir "./data/VOC2012/multi_region_segmentation/fixed" \
         --num_erode 2 --num_dilate 5 \
         --output_file "./data/VOC2012/multi_region_bboxes/fixed/bboxes_e2_d5.pth" \
@@ -389,7 +430,7 @@ def extract_bbox_features(
             --model_name dino_vits16 \
             --images_root "./data/VOC2012/images" \
             --bbox_file "./data/VOC2012/multi_region_bboxes/fixed/bboxes_e2_d5.pth" \
-            --output_file "./data/VOC2012/features" \
+            --output_file "./data/VOC2012/features/dino_vits16" \
             --output_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_features_e2_d5.pth" \
     """
 

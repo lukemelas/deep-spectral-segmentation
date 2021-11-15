@@ -132,7 +132,8 @@ class VOCSegmentationWithPseudolabelsBase(VisionDataset):
         metadata = {'id': Path(self.images[index]).stem, 'path': self.images[index], 'shape': tuple(img.shape[:2])}
         # New: load segmap and accompanying metedata
         pseudolabel = np.array(Image.open(self.segments[index]))
-        if pseudolabel.shape[0] == img.shape[0] // 16:  # HACK: this is a hack at the moment
+        if (pseudolabel.shape[0] == img.shape[0] // 16) or (pseudolabel.shape[0] == 2 * (img.shape[0] // 16)):
+            # HACK: this is a hack at the moment
             pseudolabel = cv2.resize(pseudolabel, dsize=img.shape[:2][::-1], interpolation=cv2.INTER_NEAREST)
         if self.label_map_fn is not None:
             pseudolabel = self.label_map_fn(pseudolabel)
@@ -156,7 +157,11 @@ class VOCSegmentationWithPseudolabels(VOCSegmentationWithPseudolabelsBase):
             data = self.transform(image=img, mask1=target, mask2=pseudolabel)
             # Unpack
             img, target, pseudolabel = data['image'], data['mask1'], data['mask2']
-        return img, target.long(), pseudolabel.long(), metadata
+        if torch.is_tensor(target):
+            target = target.long()
+        if torch.is_tensor(pseudolabel):
+            pseudolabel = pseudolabel.long()
+        return img, target, pseudolabel, metadata
 
 
 class VOCSegmentationWithPseudolabelsContrastive(VOCSegmentationWithPseudolabelsBase):

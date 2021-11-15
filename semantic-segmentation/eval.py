@@ -11,10 +11,11 @@ import wandb
 from tqdm import tqdm, trange
 from skimage.color import label2rgb
 from matplotlib.cm import get_cmap
+import cv2
 
 import util as utils
 import eval_utils
-from datasets.voc import VOCSegmentationWithPseudolabels
+from dataset.voc import VOCSegmentationWithPseudolabels
 
 
 @hydra.main(config_path='config', config_name='eval')
@@ -55,7 +56,6 @@ def visualize(
         *,
         cfg: DictConfig,
         dataset_val: Iterable,
-        preds: Iterable,
         vis_dir: str = './vis'):
 
     # Visualize
@@ -104,16 +104,19 @@ def evaluate(
     offset_ = 0
 
     # Add all pixels to our arrays
+    _alread_warned = 0
     for i in trange(len(dataset_val), desc='Concatenating all predictions'):
         image, target, mask, metadata = dataset_val[i]
         # Check where ground-truth is valid and append valid pixels to the array
         valid = (target != 255)
         n_valid = np.sum(valid)
         all_gt[offset_:offset_+n_valid] = target[valid]
-        # Possibly reshape embedding to match gt.
-        if mask.shape != target.shape:
-            raise ValueError(f'{mask.shape=} != {target.shape=}')
-            # mask = cv2.resize(embedding, target.shape[::-1], interpolation=cv2.INTER_NEAREST)
+        # # Possibly reshape embedding to match gt.  # NOTE: Now done in dataloader
+        # if mask.shape != target.shape:
+        #     if _alread_warned < 5:
+        #         _alread_warned += 1
+        #         print(f'WARNING! {mask.shape=} != {target.shape=}')
+        #     mask = cv2.resize(mask, target.shape[::-1], interpolation=cv2.INTER_NEAREST)
         # Append the predicted targets in the array
         all_preds[offset_:offset_+n_valid, ] = mask[valid]
         all_gt[offset_:offset_+n_valid, ] = target[valid]

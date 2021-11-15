@@ -123,8 +123,8 @@ def _extract_eig(
     
     # Load
     output_file = str(Path(output_dir) / f'{image_id}.pth')
-    # if Path(output_file).is_file():
-    #     return  # skip because already generated
+    if Path(output_file).is_file():
+        return  # skip because already generated
 
     # Load affinity matrix
     k_feats = data_dict['k'].squeeze()
@@ -230,6 +230,7 @@ def _extract_multi_region_segmentations(
     adaptive: bool, 
     non_adaptive_num_segments: int,
     infer_bg_index: bool,
+    kmeans_baseline: bool,
     output_dir: str,
 ):
     index, (feature_path, eigs_path) = inp
@@ -258,11 +259,24 @@ def _extract_multi_region_segmentations(
     else:
         n_clusters = non_adaptive_num_segments
 
-    # Eigenvector
-    eigenvectors = data_dict['eigenvectors'][1:].numpy()  # take non-constant eigenvectors
+    # K-Means
     kmeans = KMeans(n_clusters=n_clusters)
-    clusters = kmeans.fit_predict(eigenvectors.T)
-    segmap = clusters.reshape(H_patch, W_patch)
+
+    # Compute segments using eigenvector or baseline K-means
+    if kmeans_baseline:
+        feats = data_dict['k'].squeeze().numpy()
+        clusters = kmeans.fit_predict(feats)
+    else:
+        eigenvectors = data_dict['eigenvectors'][1:].numpy()  # take non-constant eigenvectors
+        clusters = kmeans.fit_predict(eigenvectors.T)
+
+    # Reshape
+    if clusters.size == H_patch * W_patch:  # TODO: better solution might be to pass in patch index
+        segmap = clusters.reshape(H_patch, W_patch)
+    elif clusters.size == H_patch * W_patch * 4:
+        segmap = clusters.reshape(H_patch * 2, W_patch * 2)
+    else:
+        raise ValueError()
 
     # TODO: Improve this step in the pipeline.
     # Background detection: we assume that the segment with the most border pixels is the 
@@ -286,6 +300,7 @@ def extract_multi_region_segmentations(
     adaptive: bool = False,
     non_adaptive_num_segments: int = 4,
     infer_bg_index: bool = True,
+    kmeans_baseline: bool = False,
     multiprocessing: int = 0
 ):
     """
@@ -297,7 +312,7 @@ def extract_multi_region_segmentations(
     """
     utils.make_output_dir(output_dir)
     fn = partial(_extract_multi_region_segmentations, adaptive=adaptive, infer_bg_index=infer_bg_index,
-                 non_adaptive_num_segments=non_adaptive_num_segments, output_dir=output_dir)
+                 non_adaptive_num_segments=non_adaptive_num_segments, kmeans_baseline=kmeans_baseline, output_dir=output_dir)
     inputs = utils.get_paired_input_files(features_dir, eigs_dir)
     utils.parallel_process(inputs, fn, multiprocessing)
 
@@ -355,6 +370,7 @@ def _extract_bbox(
     num_erode: int,
     num_dilate: int,
     skip_bg_index: bool,
+    downsample_factor: Optional[int] = None
 ):
     index, (feature_path, segmentation_path) = inp
 
@@ -364,7 +380,7 @@ def _extract_bbox(
     image_id = data_dict['id']
 
     # Sizes
-    B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
+    B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict, downsample_factor)
 
     # Get bounding boxes
     outputs = {'bboxes': [], 'bboxes_original_resolution': [], 'segment_indices': [], 'id': image_id, 
@@ -400,6 +416,7 @@ def extract_bboxes(
     num_erode: int = 2,
     num_dilate: int = 3,
     skip_bg_index: bool = True,
+    downsample_factor: Optional[int] = None,
 ):
     """
     Note: There is no need for multiprocessing here, as it is more convenient to save 
@@ -411,7 +428,8 @@ def extract_bboxes(
         --output_file "./data/VOC2012/multi_region_bboxes/fixed/bboxes_e2_d5.pth" \
     """
     utils.make_output_dir(str(Path(output_file).parent), check_if_empty=False)
-    fn = partial(_extract_bbox, num_erode=num_erode, num_dilate=num_dilate, skip_bg_index=skip_bg_index)
+    fn = partial(_extract_bbox, num_erode=num_erode, num_dilate=num_dilate, skip_bg_index=skip_bg_index, 
+                 downsample_factor=downsample_factor)
     inputs = utils.get_paired_input_files(features_dir, segmentations_dir)
     all_outputs = [fn(inp) for inp in tqdm(inputs, desc='Extracting bounding boxes')]
     torch.save(all_outputs, output_file)
@@ -476,7 +494,7 @@ def extract_bbox_clusters(
     Example:
         python extract.py extract_bbox_clusters \
             --bbox_features_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_features_e2_d5.pth" \
-            --pca_dim 32 --num_clusters 20 --seed 0 \
+            --pca_dim 32 --num_clusters 21 --seed 0 \
             --output_file "./data/VOC2012/multi_region_bboxes/fixed/bbox_clusters_e2_d5_pca_32.pth" \
     """
 
@@ -574,6 +592,7 @@ def _extract_crf_segmentations(
     num_classes: int,
     output_dir: str,
     crf_params: Tuple,
+    downsample_factor: int = 16,
 ):
     index, (image_file, segmap_path) = inp
 
@@ -589,9 +608,10 @@ def _extract_crf_segmentations(
     segmap = np.array(Image.open(segmap_path))  # (H_patch, W_patch)
      
     # Sizes
+    P = downsample_factor
     H, W = image.shape[:2]
-    H_patch, W_patch = H // 16, W // 16
-    H_pad, W_pad = H_patch * 16, W_patch * 16
+    H_patch, W_patch = H // P, W // P
+    H_pad, W_pad = H_patch * P, W_patch * P
 
     # Resize and expand
     segmap_upscaled = cv2.resize(segmap, dsize=(W_pad, H_pad), interpolation=cv2.INTER_NEAREST)  # (H_pad, W_pad)
@@ -612,6 +632,7 @@ def extract_crf_segmentations(
     segmentations_dir: str,
     output_dir: str,
     num_classes: int = 21,
+    downsample_factor: int = 16,
     multiprocessing: int = 0,
     # CRF parameters
     w1    = 20,    # weight of bilateral term  # 10.0,
@@ -631,7 +652,7 @@ def extract_crf_segmentations(
     """
     utils.make_output_dir(output_dir)
     fn = partial(_extract_crf_segmentations, images_root=images_root, num_classes=num_classes, output_dir=output_dir,
-                 crf_params=(w1, alpha, beta, w2, gamma, it))
+                 crf_params=(w1, alpha, beta, w2, gamma, it), downsample_factor=downsample_factor)
     inputs = utils.get_paired_input_files(images_list, segmentations_dir)
     print(f'Found {len(inputs)} images and segmaps')
     utils.parallel_process(inputs, fn, multiprocessing)

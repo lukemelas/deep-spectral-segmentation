@@ -24,14 +24,26 @@ def get_model(name: str):
         val_transform = get_transform(name)
         patch_size = model.patch_embed.patch_size
         num_heads = model.blocks[0].attn.num_heads
+    elif name in ['mocov3_vits16', 'mocov3_vitb16']:
+        model = torch.hub.load('facebookresearch/dino:main', name.replace('mocov3', 'dino'))
+        checkpoint_file = {
+            'mocov3_vits16': 'vit-s-300ep-timm-format.pth', 
+            'mocov3_vitb16': 'vit-b-300ep-timm-format.pth'
+        }[name]
+        checkpoint = torch.load(Path.home() / 'tmp/moco-v3' / checkpoint_file)
+        model.load_state_dict(checkpoint['model'])
+        model.fc = torch.nn.Identity()
+        val_transform = get_transform(name)
+        patch_size = model.patch_embed.patch_size
+        num_heads = model.blocks[0].attn.num_heads
     else:
-        raise NotImplementedError()
+        raise ValueError(f'Cannot get model: {name}')
     model = model.eval()
     return model, val_transform, patch_size, num_heads
 
 
 def get_transform(name: str):
-    if 'dino' in name:
+    if 'dino' in name or 'mocov3' in name:
         transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
     else:
         raise NotImplementedError()
@@ -66,8 +78,8 @@ class ImagesDataset(Dataset):
         return len(self.filenames)
 
 
-def get_image_sizes(data_dict: dict):
-    P = data_dict['patch_size']
+def get_image_sizes(data_dict: dict, downsample_factor: Optional[int] = None):
+    P = data_dict['patch_size'] if downsample_factor is None else downsample_factor
     B, C, H, W = data_dict['shape']
     assert B == 1, 'assumption violated :('
     H_patch, W_patch = H // P, W // P

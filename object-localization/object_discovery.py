@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import Tuple
+from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
 import scipy
@@ -8,9 +8,8 @@ import scipy.ndimage
 import numpy as np
 from datasets import bbox_iou
 
-# NEW: CRF -- https://github.com/HiLab-git/SimpleCRF
 ParamsCRF = namedtuple('ParamsCRF', 'w1 alpha beta w2 gamma it')
-crf_params = ParamsCRF(
+DEFAULT_CRF_PARAMS = ParamsCRF(
     w1    = 6,     # weight of bilateral term  # 10.0,
     alpha = 40,    # spatial std  # 80,  
     beta  = 13,    # rgb  std  # 13,  
@@ -20,7 +19,7 @@ crf_params = ParamsCRF(
 )
 
 
-def apply_crf(unary_potentials_low_res: torch.Tensor, img_np: np.array, dims: Tuple):
+def apply_crf(unary_potentials_low_res: torch.Tensor, img_np: np.array, dims: Tuple, crf_params: Tuple = DEFAULT_CRF_PARAMS):
     import denseCRF
 
     H, W = img_np.shape[:2]
@@ -36,23 +35,86 @@ def apply_crf(unary_potentials_low_res: torch.Tensor, img_np: np.array, dims: Tu
     return out
 
 
+def get_eigenvectors_from_features(feats, which_matrix: str = 'affinity_torch', K=2):
+    from scipy.sparse.linalg import eigsh
+
+    # Eigenvectors of affinity matrix
+    if which_matrix == 'affinity_torch':
+        A = feats @ feats.T
+        eigenvalues, eigenvectors = torch.eig(A, eigenvectors=True)
+    
+    # Eigenvectors of affinity matrix with scipy
+    elif which_matrix == 'affinity':
+        A = (feats @ feats.T).cpu().numpy()
+        eigenvalues, eigenvectors = eigsh(A, which='LM', k=K)
+        eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,))
+    
+    # Eigenvectors of laplacian matrix
+    elif which_matrix == 'laplacian':
+        A = (feats @ feats.T).cpu().numpy()
+        _W_semantic = (A * (A > 0))
+        _W_semantic = _W_semantic / _W_semantic.max()
+        diag = _W_semantic @ np.ones(_W_semantic.shape[0])
+        diag[diag < 1e-12] = 1.0
+        D = np.diag(diag)  # row sum
+        try:
+            eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, sigma=0, which='LM', M=D)
+        except:
+            eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, which='SM', M=D)
+        eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
+
+    # Eigenvectors of matting laplacian matrix
+    elif which_matrix == 'matting_laplacian':
+
+        raise NotImplementedError()
+
+        # # Get sizes
+        # B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
+        # H_pad_lr, W_pad_lr = H_pad // image_downsample_factor, W_pad // image_downsample_factor
+        
+        # # Load image
+        # image_file = str(Path(images_root) / f'{image_id}.jpg')
+        # image_lr = Image.open(image_file).resize((W_pad_lr, H_pad_lr), Image.BILINEAR)
+        # image_lr = np.array(image_lr) / 255.
+
+        # # Get color affinities
+        # W_lr = utils.knn_affinity(image_lr / 255)
+
+        # # Get semantic affinities
+        # k_feats_lr = F.interpolate(
+        #     k_feats.T.reshape(1, -1, H_patch, W_patch), 
+        #     size=(H_pad_lr, W_pad_lr), mode='bilinear', align_corners=False
+        # ).reshape(-1, H_pad_lr * W_pad_lr).T
+        # A_sm_lr = k_feats_lr @ k_feats_lr.T
+        # W_sm_lr = (A_sm_lr * (A_sm_lr > 0)).cpu().numpy()
+        # W_sm_lr = W_sm_lr / W_sm_lr.max()
+
+        # # Combine
+        # W_color = np.array(W_lr.todense().astype(np.float32))
+        # W_comb = W_sm_lr + W_color * image_color_lambda  # combination
+        # D_comb = utils.get_diagonal(W_comb)
+
+        # # Extract eigenvectors
+        # try:
+        #     eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, sigma=0, which='LM', M=D_comb)
+        # except:
+        #     eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, which='SM', M=D_comb)
+        # eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
+    
+    return eigenvectors
 
 
-
-def eigen_lost(feats, dims, scales, init_image_size, k_patches=100, img_np = None):
+def get_bbox_from_patch_mask(patch_mask, dims, scales, init_image_size, use_crf: bool = False,
+                             img_np: Optional[np.array] = None):
     initial_im_size=init_image_size[1:]
     w_featmap, h_featmap = dims
 
-    # Affinity matrix
-    A = (feats @ feats.transpose(1, 2)).squeeze()
-
-    # Compute the similarity
-    eigenvalues, eigenvectors = torch.eig(A, eigenvectors=True)
-    patch_mask = eigenvectors[:, 0] > 0  # <-- this is the approximate mask
+    # Create patch mask
     patch_mask = patch_mask.reshape(w_featmap, h_featmap)
     patch_mask = patch_mask.cpu().numpy()
 
     # # LOST: This gets the reported 61.44 performance
+    # k_patches = 100
     # sorted_patches, scores = patch_scoring(A)
     # seed = sorted_patches[0]
     # potentials = sorted_patches[:k_patches]
@@ -60,17 +122,18 @@ def eigen_lost(feats, dims, scales, init_image_size, k_patches=100, img_np = Non
     # M = torch.sum(A[similars, :], dim=0)
     # patch_mask = (M > 0).reshape(w_featmap, h_featmap).cpu().numpy()
     
-    # # CRF or rescale
-    # patch_mask = apply_crf(M, img_np, dims)
-    # H, W = img_np.shape[:2]
-    # H_, W_ = dims
-    # patch_mask = (F.interpolate(M.reshape(1, 1, H_, W_), size=(H, W), mode='bilinear').squeeze() > 0).cpu().numpy()
+    # CRF or rescale
+    if use_crf:
+        H, W = img_np.shape[:2]
+        H_, W_ = dims
+        patch_mask = apply_crf(patch_mask, img_np, dims)
+        patch_mask = (F.interpolate(patch_mask.reshape(1, 1, H_, W_), size=(H, W), mode='bilinear').squeeze() > 0).cpu().numpy()
     
     # Possibly reverse mask
     # print(np.mean(patch_mask).item())
     if 0.5 < np.mean(patch_mask).item() < 1.0:
         patch_mask = (1 - patch_mask).astype(np.uint8)
-    elif np.sum(patch_mask).item() == 0:  # nothing detected at all
+    elif np.sum(patch_mask).item() == 0:  # nothing detected at all, so cover the entire image
         patch_mask = (1 - patch_mask).astype(np.uint8) 
     
     # Get the box corresponding to the largest connected component of the first eigenvector

@@ -192,7 +192,7 @@ def _extract_eig(
 
     # Sign ambiguity
     for k in range(eigenvectors.shape[1]):
-        if 0.5 < torch.mean((eigenvectors[:, k]).float()).item() < 1.0:  # reverse segment
+        if 0.5 < torch.mean((eigenvectors[:, k] > 0).float()).item() < 1.0:  # reverse segment
             eigenvectors[:, k] = 0 - eigenvectors[:, k]
 
     # Save dict

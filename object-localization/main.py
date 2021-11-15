@@ -102,6 +102,7 @@ def parse_args():
 
     # Misc
     parser.add_argument("--name", type=str, default=None, help='Experiment name')
+    parser.add_argument("--skip_if_exists", action='store_true', help='If results dir already exists , exit')
 
     # Use dino-seg proposed method
     parser.add_argument("--ganseg", action="store_true", help="Apply GAN model.")
@@ -164,20 +165,6 @@ def main():
     else:
         dataset = Dataset(args.dataset, args.set, args.no_hard, transform)
 
-    # -------------------------------------------------------------------------------------------------------
-    # Model
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    if args.ganseg:
-        model = torch.hub.load('greeneggsandyaml/uss', 'simple_unet').to(device).eval()
-    else:
-        model = get_model(args.arch, args.patch_size, args.resnet_dilate, device)
-
-    # -------------------------------------------------------------------------------------------------------
-    # Directories
-    if args.image_path is None:
-        args.output_dir = os.path.join(args.output_dir, dataset.name)
-    os.makedirs(args.output_dir, exist_ok=True)
-
     # Naming
     if args.name is not None:
         exp_name = args.name
@@ -195,6 +182,27 @@ def main():
             exp_name += f"dilate{args.resnet_dilate}"
         elif "vit" in args.arch:
             exp_name += f"{args.patch_size}_{args.which_features}"
+
+    # -------------------------------------------------------------------------------------------------------
+    # Directories
+    if args.image_path is None:
+        args.output_dir = os.path.join(args.output_dir, dataset.name)
+
+    # Skip if already exists
+    exp_dir = Path(args.output_dir) / exp_name
+    if args.skip_if_exists and exp_dir.is_dir() and len(list(exp_dir.iterdir())) > 0:
+        print(f'Directory already exists and is not empty: {str(exp_dir)}')
+        print(f'Exiting...')
+        sys.exit()
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # -------------------------------------------------------------------------------------------------------
+    # Model
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    if args.ganseg:
+        model = torch.hub.load('greeneggsandyaml/uss', 'simple_unet').to(device).eval()
+    else:
+        model = get_model(args.arch, args.patch_size, args.resnet_dilate, device)
 
     print(f"Running LOST on the dataset {dataset.name} (exp: {exp_name})")
     print(f"Args:")
@@ -292,7 +300,8 @@ def main():
         elif args.eigenseg and args.precomputed_eigs_dir is not None:
 
             # Load
-            precomputed_eigs_file = os.path.join(args.precomputed_eigs_dir, im_name.replace('.jpg', '.pth'))
+            fname = im_name.replace('.jpg', '.pth') if 'VOC07' in dataset.name else im_name.replace('.jpg', '.pth')
+            precomputed_eigs_file = os.path.join(args.precomputed_eigs_dir, fname)
             precomputed_eigs = torch.load(precomputed_eigs_file, map_location='cpu')
             eigenvectors = precomputed_eigs['eigenvectors']  # tensor of shape (K, H_lr * W_lr)
 
@@ -300,10 +309,11 @@ def main():
             assert ('affinity' in args.which_matrix) ^ ('laplacian' in args.which_matrix)
             eig_index = 0 if 'affinity' in args.which_matrix else 1
             patch_mask = (eigenvectors[eig_index] > 0)
-            P = args.precomputed_eigs_downsample
-            dims_wh = (img.shape[-2] // P, img.shape[-1] // P)
-            scales = (P, P)
-            pred = get_bbox_from_patch_mask(patch_mask, dims_wh, scales, init_image_size)
+            pred = get_bbox_from_patch_mask(patch_mask, init_image_size)
+            # P = args.precomputed_eigs_downsample
+            # dims_wh = (img.shape[-2] // P, img.shape[-1] // P)
+            # scales = (P, P)
+            # pred = get_bbox_from_patch_mask(patch_mask, dims_wh, scales, init_image_size)
 
             # TODO: Maybe think of a better way to do the background detection this?
             # TODO: Discuss the background detection issue in the paper
@@ -397,7 +407,8 @@ def main():
                     assert ('affinity' in args.which_matrix) ^ ('laplacian' in args.which_matrix)
                     eig_index = 0 if 'affinity' in args.which_matrix else 1
                     patch_mask = (eigenvectors[:, eig_index] > 0)
-                    pred = get_bbox_from_patch_mask(patch_mask, dims_wh, scales, init_image_size)
+                    pred = get_bbox_from_patch_mask(patch_mask, init_image_size)
+                    # pred = get_bbox_from_patch_mask(patch_mask, dims_wh, scales, init_image_size)
                     # use_crf=True, img_np=np.array(inverse_transform(img))
                 else:
                     pred, A, M, scores, seed = lost(feats, dims_wh, scales, init_image_size, k_patches=args.k_patches)

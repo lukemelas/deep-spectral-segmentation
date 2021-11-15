@@ -104,14 +104,24 @@ def get_eigenvectors_from_features(feats, which_matrix: str = 'affinity_torch', 
     return eigenvectors
 
 
-def get_bbox_from_patch_mask(patch_mask, dims, scales, init_image_size, use_crf: bool = False,
+def get_bbox_from_patch_mask(patch_mask, init_image_size, use_crf: bool = False,
                              img_np: Optional[np.array] = None):
-    initial_im_size=init_image_size[1:]
-    w_featmap, h_featmap = dims
+    # w_featmap, h_featmap = dims
+
+    # Sizing
+    H, W = init_image_size[1:]
+    T = patch_mask.numel()
+    if (H // 8) * (W // 8) == T:
+        P, H_lr, W_lr = (8, H // 8, W // 8)
+    elif (H // 16) * (W // 16) == T:
+        P, H_lr, W_lr = (16, H // 16, W // 16)
+    elif 4 * (H // 16) * (W // 16) == T:
+        P, H_lr, W_lr = (8, 2 * (H // 16), 2 * (W // 16))
+    else:
+        raise ValueError(f'{init_image_size=}, {patch_mask.shape=}')
 
     # Create patch mask
-    patch_mask = patch_mask.reshape(w_featmap, h_featmap)
-    patch_mask = patch_mask.cpu().numpy()
+    patch_mask = patch_mask.reshape(H_lr, W_lr).cpu().numpy()
 
     # # LOST: This gets the reported 61.44 performance
     # k_patches = 100
@@ -120,7 +130,7 @@ def get_bbox_from_patch_mask(patch_mask, dims, scales, init_image_size, use_crf:
     # potentials = sorted_patches[:k_patches]
     # similars = potentials[A[seed, potentials] > 0.0]
     # M = torch.sum(A[similars, :], dim=0)
-    # patch_mask = (M > 0).reshape(w_featmap, h_featmap).cpu().numpy()
+    # patch_mask = (M > 0).reshape(H_lr, W_lr).cpu().numpy()
     
     # CRF or rescale
     if use_crf:
@@ -141,16 +151,15 @@ def get_bbox_from_patch_mask(patch_mask, dims, scales, init_image_size, use_crf:
     # pred = [xmin, ymin, xmax, ymax]
 
     # Rescale to image size
-    r_xmin, r_xmax = scales[1] * xmin, scales[1] * xmax
-    r_ymin, r_ymax = scales[0] * ymin, scales[0] * ymax
+    r_xmin, r_xmax = P * xmin, P * xmax
+    r_ymin, r_ymax = P * ymin, P * ymax
 
     # Prediction bounding box
     pred = [r_xmin, r_ymin, r_xmax, r_ymax]
 
     # Check not out of image size (used when padding)
-    if initial_im_size:
-        pred[2] = min(pred[2], initial_im_size[1])
-        pred[3] = min(pred[3], initial_im_size[0])
+    pred[2] = min(pred[2], W)
+    pred[3] = min(pred[3], H)
 
     return np.asarray(pred)
 

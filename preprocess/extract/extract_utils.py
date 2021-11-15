@@ -103,7 +103,7 @@ def get_paired_input_files(path1: str, path2: str):
     return list(enumerate(zip(files1, files2)))
 
 
-def make_output_dir(output_dir, check_if_empty=True):
+def make_output_dir(output_dir, check_if_empty=False):
     output_dir = Path(output_dir) 
     output_dir.mkdir(exist_ok=True, parents=True)
     if check_if_empty and (len(list(output_dir.iterdir())) > 0):

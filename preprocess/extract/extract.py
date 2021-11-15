@@ -112,7 +112,7 @@ def _extract_eig(
     images_root: str,
     output_dir: str,
     which_matrix: str = 'laplacian',
-    image_downsample_factor: int = 4,
+    image_downsample_factor: Optional[int] = None,
     image_color_lambda: float = 10,
 ):
     index, features_file = inp
@@ -143,15 +143,15 @@ def _extract_eig(
     # Eigenvectors of laplacian matrix
     elif which_matrix == 'laplacian':
         A = (k_feats @ k_feats.T).cpu().numpy()
-        _W_semantic = (A * (A > 0))
-        _W_semantic = _W_semantic / _W_semantic.max()
-        diag = _W_semantic @ np.ones(_W_semantic.shape[0])
+        W_sm = (A * (A > 0))
+        W_sm = W_sm / W_sm.max()
+        diag = W_sm @ np.ones(W_sm.shape[0])
         diag[diag < 1e-12] = 1.0
-        D = np.diag(diag)  # row sum
+        D = utils.get_diagonal(W_sm)  # np.diag(diag)  # row sum
         try:
-            eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, sigma=0, which='LM', M=D)
+            eigenvalues, eigenvectors = eigsh(D - W_sm, k=K, sigma=0, which='LM', M=D)
         except:
-            eigenvalues, eigenvectors = eigsh(D - _W_semantic, k=K, which='SM', M=D)
+            eigenvalues, eigenvectors = eigsh(D - W_sm, k=K, which='SM', M=D)
         eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
 
     # Eigenvectors of matting laplacian matrix
@@ -159,6 +159,8 @@ def _extract_eig(
 
         # Get sizes
         B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
+        if image_downsample_factor is None:
+            image_downsample_factor = P
         H_pad_lr, W_pad_lr = H_pad // image_downsample_factor, W_pad // image_downsample_factor
         
         # Load image
@@ -168,6 +170,7 @@ def _extract_eig(
 
         # Get color affinities
         W_lr = utils.knn_affinity(image_lr / 255)
+        W_color = np.array(W_lr.todense().astype(np.float32))
 
         # Get semantic affinities
         k_feats_lr = F.interpolate(
@@ -179,7 +182,6 @@ def _extract_eig(
         W_sm_lr = W_sm_lr / W_sm_lr.max()
 
         # Combine
-        W_color = np.array(W_lr.todense().astype(np.float32))
         W_comb = W_sm_lr + W_color * image_color_lambda  # combination
         D_comb = utils.get_diagonal(W_comb)
 
@@ -206,8 +208,8 @@ def extract_eigs(
     output_dir: str,
     which_matrix: str = 'laplacian',
     K: int = 20,
-    image_downsample_factor: int = 4,
-    image_color_lambda: float = 10,
+    image_downsample_factor: Optional[int] = None,
+    image_color_lambda: float = 0.0,
     multiprocessing: int = 0
 ):
     """

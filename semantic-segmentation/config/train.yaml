@@ -17,6 +17,9 @@ model:
 
 lambda_contrastive: 0.2
 
+segments_dir: ""  # ${oc.env:FOUND_NEW_DIR}/data/VOC2012/semantic_segmentations/crf/fixed_15/segmaps_e2_d5_pca_0_s12
+matching: ""  # "[(0, 0) (1, 18) (2, 2) (3, 12) (4, 13) (5, 1) (6, 8) (7, 15) (8, 4) (9, 3) (10, 20) (11, 9) (12, 10) (13, 16) (14, 19) (15, 14) (16, 5) (17, 17) (18, 7) (19, 6) (20, 11)]"
+
 checkpoint:
   resume: null
   resume_training: True

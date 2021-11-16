@@ -139,8 +139,8 @@ def _extract_eig(
     
     # Load
     output_file = str(Path(output_dir) / f'{image_id}.pth')
-    # if Path(output_file).is_file():
-    #     return  # skip because already generated
+    if Path(output_file).is_file():
+        return  # skip because already generated
 
     # Load affinity matrix
     feats = data_dict[which_features].squeeze()
@@ -191,11 +191,14 @@ def _extract_eig(
         image_lr = np.array(image_lr) / 255.
 
         # Get color affinities
-        if which_color_matrix == 'knn':
-            W_lr = utils.knn_affinity(image_lr / 255)
-        elif which_color_matrix == 'rw':
-            W_lr = utils.rw_affinity(image_lr / 255)
-        W_color = np.array(W_lr.todense().astype(np.float32))
+        if image_color_lambda > 0:
+            if which_color_matrix == 'knn':
+                W_lr = utils.knn_affinity(image_lr / 255)
+            elif which_color_matrix == 'rw':
+                W_lr = utils.rw_affinity(image_lr / 255)
+            W_color = np.array(W_lr.todense().astype(np.float32))
+        else:
+            W_color = 0
 
         # Get semantic affinities
         feats_lr = F.interpolate(
@@ -210,7 +213,7 @@ def _extract_eig(
 
         # Combine
         W_comb = W_sm_lr + W_color * image_color_lambda  # combination
-        D_comb = utils.get_diagonal(W_comb)
+        D_comb = np.array(utils.get_diagonal(W_comb).todense())  # is dense or sparse faster? not sure, should check
 
         # Extract eigenvectors
         try:

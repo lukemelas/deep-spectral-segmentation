@@ -6,10 +6,6 @@ from torch.utils.data._utils.collate import default_collate
 from .voc import VOCSegmentationWithPseudolabels, VOCSegmentationWithPseudolabelsContrastive
 
 
-# TODO: NOT HARDCODE
-LABEL_MAP = {0: 0, 1: 18, 2: 2, 3: 12, 4: 13, 5: 1, 6: 8, 7: 15, 8: 4, 9: 3, 10: 20, 11: 9, 12: 10, 13: 16, 14: 19, 15: 14, 16: 5, 17: 17, 18: 7, 19: 6, 20: 11}
-
-
 def get_transforms(resize_size, crop_size, img_mean, img_std):
     
     # Multiple training transforms for contrastive learning
@@ -48,12 +44,17 @@ def get_datasets(cfg):
     # Get transforms
     train_transforms_tuple, val_transform = get_transforms(**cfg.data.transform)
 
+    # Get the label map
+    if cfg.matching is not None:
+        matching = dict(eval(str(cfg.matching)))
+        print(f'Using matching: {matching}')
+
     # Training dataset
     dataset_train = VOCSegmentationWithPseudolabelsContrastive(
         **cfg.data.train_kwargs, 
         segments_dir=cfg.segments_dir,
         transforms_tuple=train_transforms_tuple,
-        label_map = LABEL_MAP
+        label_map=matching
     )
 
     # Validation dataset
@@ -61,7 +62,7 @@ def get_datasets(cfg):
         **cfg.data.val_kwargs, 
         segments_dir=cfg.segments_dir,
         transform=val_transform,
-        label_map = LABEL_MAP
+        label_map=matching
     )
 
     return dataset_train, dataset_val, collate_fn

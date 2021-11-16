@@ -9,6 +9,15 @@ import warnings
 from torchvision.datasets.voc import VisionDataset, verify_str_arg, DATASET_YEAR_DICT, os 
 
 
+def _resize_pseudolabel(pseudolabel, img): # HACK HACK HACK
+    if (
+        (pseudolabel.shape[0] == img.shape[0] // 16) or 
+        (pseudolabel.shape[0] == img.shape[0] // 8) or 
+        (pseudolabel.shape[0] == 2 * (img.shape[0] // 16))
+    ):
+        return cv2.resize(pseudolabel, dsize=img.shape[:2][::-1], interpolation=cv2.INTER_NEAREST)
+
+
 class VOCSegmentationWithPseudolabelsBase(VisionDataset):
 
     _SPLITS_DIR = "Segmentation"
@@ -132,9 +141,7 @@ class VOCSegmentationWithPseudolabelsBase(VisionDataset):
         metadata = {'id': Path(self.images[index]).stem, 'path': self.images[index], 'shape': tuple(img.shape[:2])}
         # New: load segmap and accompanying metedata
         pseudolabel = np.array(Image.open(self.segments[index]))
-        if (pseudolabel.shape[0] == img.shape[0] // 16) or (pseudolabel.shape[0] == 2 * (img.shape[0] // 16)):
-            # HACK: this is a hack at the moment
-            pseudolabel = cv2.resize(pseudolabel, dsize=img.shape[:2][::-1], interpolation=cv2.INTER_NEAREST)
+        pseudolabel = _resize_pseudolabel(pseudolabel, img)  # HACK HACK HACK
         if self.label_map_fn is not None:
             pseudolabel = self.label_map_fn(pseudolabel)
         return (img, target, pseudolabel, metadata)

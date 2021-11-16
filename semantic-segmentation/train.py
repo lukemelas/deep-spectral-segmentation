@@ -23,6 +23,9 @@ import util as utils
 from model import get_model
 from dataset import get_datasets
 
+# Debug
+torch.autograd.set_detect_anomaly(True)
+
 
 @hydra.main(config_path='config', config_name='train')
 def main(cfg: DictConfig):
@@ -76,6 +79,10 @@ def main(cfg: DictConfig):
         collate_fn=collate_fn, **{**cfg.data.loader, 'batch_size': 1})
     total_batch_size = cfg.data.loader.batch_size * accelerator.num_processes * cfg.gradient_accumulation_steps
 
+    # SyncBatchNorm
+    if accelerator.num_processes > 1:
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
     # Setup
     model, optimizer, dataloader_train = accelerator.prepare(model, optimizer, dataloader_train)
 
@@ -121,7 +128,9 @@ def main(cfg: DictConfig):
     # Evaluate masks before training
     if cfg.get('eval_masks_before_training', True):
         print('Evaluating masks before training...')
-        evaluate(**kwargs, evaluate_dataset_pseudolabels=True) # <-- to eval the masks
+        if accelerator.is_main_process:
+            evaluate(**kwargs, evaluate_dataset_pseudolabels=True) # <-- to eval the masks
+        torch.cuda.synchronize()
 
     # Training loop
     while True:

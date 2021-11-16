@@ -97,8 +97,8 @@ for stem in input_stems:
 # Stack 
 img_tensor_grid = make_grid(img_tensors, nrow=nrow, pad_value=1)
 image = TF.to_pil_image(img_tensor_grid)
-image.save(output_file_eig)
-print(f'Saved to {output_file_eig}')
+# image.save(output_file_eig)
+# print(f'Saved to {output_file_eig}')
 
 # %%
 
@@ -115,7 +115,7 @@ def get_largest_cc(mask: np.array):
 # Get bounding boxes
 bboxes_root = Path("../../object-localization/outputs/VOC12_train/")
 bboxes_dir = "laplacian"
-output_file_loc = "./figures/loc-examples-failuers-vits16.png"
+output_file_loc = "./figures/loc-examples-failures-vits16.png"
 
 # Load
 import pickle
@@ -128,7 +128,9 @@ with open(bboxes_root / bboxes_dir / "gt.pkl", "rb") as f:
 # input_stems = [f[:-4] for f in list(gt)[1000:]]
 # input_stems = [f[:-4] for f in list(gt)[1500:]]
 # input_stems = [f[:-4] for f in list(gt)[2000:]]
+# input_stems = [f[:-4] for f in list(gt)[2200:]]  # examples-6
 # input_stems = [f[:-4] for f in list(gt)[2500:]]
+input_stems = [f[:-4] for f in list(gt)[420:]]
 # input_stems = [f[:-4] for f in list(gt)[1337:]]
 # # Examples of failure cases
 # input_stems = ['2007_004289', '2007_004291', '2007_005764', '2007_008085']
@@ -192,8 +194,8 @@ for stem in input_stems:
 
     # Draw bounding box
     img = (TF.to_tensor(image) * 255).to(torch.uint8)
-    img_pred = draw_bounding_boxes(img, boxes=bbox_pred, width=4, colors=[pred_color] * 10)
-    img_gt = draw_bounding_boxes(img, boxes=bbox_gt, width=4, colors=['lightseagreen'] * 10)
+    img_pred = draw_bounding_boxes(img, boxes=bbox_pred, width=10, colors=[pred_color] * 10)
+    img_gt = draw_bounding_boxes(img, boxes=bbox_gt, width=10, colors=['lightseagreen'] * 10)
     image_pred = TF.to_pil_image(img_pred)
     image_gt = TF.to_pil_image(img_gt)
 
@@ -206,8 +208,10 @@ for stem in input_stems:
 # Stack
 np_grid = np.vstack(np_rows)
 image_grid = Image.fromarray(np_grid)
-image_grid.save(output_file_loc)
-print(f'Saved to {output_file_loc}')
+# image_grid.save(output_file_loc)
+# print(f'Saved to {output_file_loc}')
+display(image_grid)
+print(output_file_loc)
 
 # %% 
 image_grid
@@ -225,7 +229,7 @@ segmap_dir = 'laplacian_dino_vitb16_fixed_15'  # 'laplacian_dino_vitb8_fixed_15'
 semseg_run = 'segmaps_e_d5_pca_0_s12'
 
 # Colors
-colors = get_cmap('tab20', 21).colors[:, :3]
+colors = get_cmap('tab20', 21).colors[:, :3][::-1]
 
 # Show images
 for stem in input_stems:
@@ -281,7 +285,7 @@ for stem in input_stems:
 
     # Bounding boxes
     img = (TF.to_tensor(image) * 255).to(torch.uint8)
-    img_pred = draw_bounding_boxes(img, boxes=torch.tensor(boxes), width=4, colors=['limegreen'])
+    img_pred = draw_bounding_boxes(img, boxes=torch.tensor(boxes), width=10, colors=['limegreen'])
     image_pred = TF.to_pil_image(img_pred)
     image_pred.save(f'figures/method-diagram-{stem}-bbox.png')
 

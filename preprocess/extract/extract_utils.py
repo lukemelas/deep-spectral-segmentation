@@ -19,7 +19,13 @@ import scipy.sparse
 
 
 def get_model(name: str):
-    if 'dino' in name:
+    if 'dino' in name and 'resnet' in name:
+        model = torch.hub.load('facebookresearch/dino:main', name, replace_stride_with_dilation=[False, False, True])
+        model = ResNet50Bottom(model)
+        val_transform = get_transform(name)
+        patch_size = 16
+        num_heads = None
+    elif 'dino' in name:
         model = torch.hub.load('facebookresearch/dino:main', name)
         model.fc = torch.nn.Identity()
         val_transform = get_transform(name)
@@ -78,6 +84,15 @@ class ImagesDataset(Dataset):
     def __len__(self) -> int:
         return len(self.filenames)
 
+
+class ResNet50Bottom(torch.nn.Module):
+    def __init__(self, original_model):
+        super(ResNet50Bottom, self).__init__()
+        self.features = torch.nn.Sequential(*list(original_model.children())[:-2])
+
+    def forward(self, x):
+        x = self.features(x)
+        return x
 
 def get_image_sizes(data_dict: dict, downsample_factor: Optional[int] = None):
     P = data_dict['patch_size'] if downsample_factor is None else downsample_factor

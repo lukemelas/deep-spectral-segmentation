@@ -116,7 +116,7 @@ def get_largest_cc(mask: np.array):
 # Get bounding boxes
 bboxes_root = Path("../../object-localization/outputs/VOC12_train/")
 bboxes_dir = "laplacian"
-output_file_loc = "./figures/loc-examples-8-vits16.png"
+output_file_loc = "./figures/loc-examples-failuers-vits16.png"
 
 # Load
 import pickle
@@ -130,6 +130,7 @@ with open(bboxes_root / bboxes_dir / "gt.pkl", "rb") as f:
 # input_stems = [f[:-4] for f in list(gt)[1500:]]
 # input_stems = [f[:-4] for f in list(gt)[2000:]]
 # input_stems = [f[:-4] for f in list(gt)[2500:]]
+# input_stems = [f[:-4] for f in list(gt)[1337:]]
 # # Examples of failure cases
 # input_stems = ['2007_004289', '2007_004291', '2007_005764', '2007_008085']
 
@@ -185,6 +186,10 @@ for stem in input_stems:
     # Check
     max_iou = box_iou(bbox_gt, bbox_pred).max().item()
     pred_color = 'limegreen' if (max_iou > 0.5) else 'orangered'
+
+    # Generate only bad failure cases
+    if (max_iou > 0.3):
+        continue
 
     # Draw bounding box
     img = (TF.to_tensor(image) * 255).to(torch.uint8)

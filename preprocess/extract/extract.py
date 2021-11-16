@@ -52,10 +52,11 @@ def extract_features(
     model, val_transform, patch_size, num_heads = utils.get_model(model_name_lower)
 
     # Add hook
-    feat_out = {}
-    def hook_fn_forward_qkv(module, input, output):
-        feat_out["qkv"] = output
-    model._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(hook_fn_forward_qkv)
+    if 'resnet' not in model_name_lower:
+        feat_out = {}
+        def hook_fn_forward_qkv(module, input, output):
+            feat_out["qkv"] = output
+        model._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(hook_fn_forward_qkv)
 
     # Dataset
     filenames = Path(images_list).read_text().splitlines()
@@ -91,15 +92,18 @@ def extract_features(
         images = images[:, :, :H_pad, :W_pad]
 
         # Forward
-        # out = accelerator.unwrap_model(model).get_intermediate_layers(images)[0].squeeze(0)
-        out = model.get_intermediate_layers(images.to(accelerator.device))[0].squeeze(0)
+        if 'resnet' in model_name_lower:
+            output_dict['k'] = model(images.to(accelerator.device)).squeeze(0)
+        else:
+            # out = accelerator.unwrap_model(model).get_intermediate_layers(images)[0].squeeze(0)
+            out = model.get_intermediate_layers(images.to(accelerator.device))[0].squeeze(0)
+            # output_dict['out'] = out
+            output_qkv = feat_out["qkv"].reshape(B, T, 3, num_heads, -1 // num_heads).permute(2, 0, 3, 1, 4)
+            # output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+            output_dict['k'] = output_qkv[1].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+            # output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
 
-        # Reshape
-        # output_dict['out'] = out
-        output_qkv = feat_out["qkv"].reshape(B, T, 3, num_heads, -1 // num_heads).permute(2, 0, 3, 1, 4)
-        # output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
-        output_dict['k'] = output_qkv[1].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
-        # output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+        # Metadata
         output_dict['indices'] = indices[0]
         output_dict['file'] = files[0]
         output_dict['id'] = id

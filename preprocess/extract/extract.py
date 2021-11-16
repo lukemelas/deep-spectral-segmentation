@@ -123,8 +123,8 @@ def _extract_eig(
     
     # Load
     output_file = str(Path(output_dir) / f'{image_id}.pth')
-    if Path(output_file).is_file():
-        return  # skip because already generated
+    # if Path(output_file).is_file():
+    #     return  # skip because already generated
 
     # Load affinity matrix
     k_feats = data_dict['k'].squeeze()
@@ -138,15 +138,15 @@ def _extract_eig(
     elif which_matrix == 'affinity':
         A = (k_feats @ k_feats.T).cpu().numpy()
         eigenvalues, eigenvectors = eigsh(A, which='LM', k=K)
-        eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,))
+        eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,)).T
     
     # Eigenvectors of laplacian matrix
     elif which_matrix == 'laplacian':
-        A = (k_feats @ k_feats.T).cpu().numpy()
-        W_sm = (A * (A > 0))
+        A = (k_feats @ k_feats.T)
+        W_sm = (A * (A > 0)).cpu().numpy()
         W_sm = W_sm / W_sm.max()
-        diag = W_sm @ np.ones(W_sm.shape[0])
-        diag[diag < 1e-12] = 1.0
+        # diag = W_sm @ np.ones(W_sm.shape[0])
+        # diag[diag < 1e-12] = 1.0
         D = utils.get_diagonal(W_sm)  # np.diag(diag)  # row sum
         try:
             eigenvalues, eigenvectors = eigsh(D - W_sm, k=K, sigma=0, which='LM', M=D)
@@ -193,9 +193,9 @@ def _extract_eig(
         eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
 
     # Sign ambiguity
-    for k in range(eigenvectors.shape[1]):
-        if 0.5 < torch.mean((eigenvectors[:, k] > 0).float()).item() < 1.0:  # reverse segment
-            eigenvectors[:, k] = 0 - eigenvectors[:, k]
+    for k in range(eigenvectors.shape[0]):
+        if 0.5 < torch.mean((eigenvectors[k] > 0).float()).item() < 1.0:  # reverse segment
+            eigenvectors[k] = 0 - eigenvectors[k]
 
     # Save dict
     output_dict = {'eigenvalues': eigenvalues, 'eigenvectors': eigenvectors}

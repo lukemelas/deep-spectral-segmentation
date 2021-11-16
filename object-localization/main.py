@@ -307,8 +307,10 @@ def main():
 
             # Get eigenvectors 
             assert ('affinity' in args.which_matrix) ^ ('laplacian' in args.which_matrix)
-            eig_index = 0 if 'affinity' in args.which_matrix else 1
-            patch_mask = (eigenvectors[eig_index] > 0)
+            if 'affinity' in args.which_matrix:
+                patch_mask = (eigenvectors[:, 0] > 0)
+            else:
+                patch_mask = (eigenvectors[1] > 0)
             pred = get_bbox_from_patch_mask(patch_mask, init_image_size)
             # P = args.precomputed_eigs_downsample
             # dims_wh = (img.shape[-2] // P, img.shape[-1] // P)
@@ -430,7 +432,7 @@ def main():
             
         # Save the prediction
         preds_dict[im_name] = pred
-        gt_dict[im_name] = pred
+        gt_dict[im_name] = gt_bbxs
 
         # Evaluation
         if args.no_evaluation:

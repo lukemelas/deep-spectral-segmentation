@@ -308,7 +308,10 @@ def main():
             # Get eigenvectors 
             assert ('affinity' in args.which_matrix) ^ ('laplacian' in args.which_matrix)
             if 'affinity' in args.which_matrix:
-                patch_mask = (eigenvectors[:, 0] > 0)
+                if eigenvectors.shape[0] > eigenvectors.shape[1]:  # HACK
+                    patch_mask = (eigenvectors[:, 0] > 0)
+                else:
+                    patch_mask = (eigenvectors[0] > 0)
             else:
                 patch_mask = (eigenvectors[1] > 0)
             pred = get_bbox_from_patch_mask(patch_mask, init_image_size)

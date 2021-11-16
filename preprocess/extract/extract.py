@@ -66,11 +66,20 @@ def extract_features(
 
     # Prepare
     accelerator = Accelerator(fp16=True, cpu=False)
-    model, dataloader = accelerator.prepare(model, dataloader)
+    # model, dataloader = accelerator.prepare(model, dataloader)
+    model = model.to(accelerator.device)
 
     # Process
-    for i, (images, files, indices) in enumerate(tqdm(dataloader, desc='Processing')):
+    pbar = tqdm(dataloader, desc='Processing')
+    for i, (images, files, indices) in enumerate(pbar):
         output_dict = {}
+
+        # Check if file already exists
+        id = Path(files[0]).stem
+        output_file = Path(output_dir) / f'{id}.pth'
+        if output_file.is_file():
+            pbar.write(f'Skipping existing file {str(output_file)}')
+            continue
 
         # Reshape image
         P = patch_size
@@ -82,7 +91,8 @@ def extract_features(
         images = images[:, :, :H_pad, :W_pad]
 
         # Forward
-        out = accelerator.unwrap_model(model).get_intermediate_layers(images)[0].squeeze(0)
+        # out = accelerator.unwrap_model(model).get_intermediate_layers(images)[0].squeeze(0)
+        out = model.get_intermediate_layers(images.to(accelerator.device))[0].squeeze(0)
 
         # Reshape
         # output_dict['out'] = out
@@ -92,15 +102,14 @@ def extract_features(
         # output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
         output_dict['indices'] = indices[0]
         output_dict['file'] = files[0]
-        output_dict['id'] = id = Path(files[0]).stem
+        output_dict['id'] = id
         output_dict['model_name'] = model_name
         output_dict['patch_size'] = patch_size
         output_dict['shape'] = (B, C, H, W)
         output_dict = {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in output_dict.items()}
 
         # Save
-        output_file = str(Path(output_dir) / f'{id}.pth')
-        accelerator.save(output_dict, output_file)
+        accelerator.save(output_dict, str(output_file))
         accelerator.wait_for_everyone()
     
     print(f'Saved features to {output_dir}')
@@ -112,6 +121,9 @@ def _extract_eig(
     images_root: str,
     output_dir: str,
     which_matrix: str = 'laplacian',
+    which_features: str = 'k',
+    which_color_matrix: str = 'knn',
+    threshold_at_zero: bool = True,
     image_downsample_factor: Optional[int] = None,
     image_color_lambda: float = 10,
 ):
@@ -127,23 +139,29 @@ def _extract_eig(
     #     return  # skip because already generated
 
     # Load affinity matrix
-    k_feats = data_dict['k'].squeeze()
+    feats = data_dict[which_features].squeeze()
 
     # Eigenvectors of affinity matrix
     if which_matrix == 'affinity_torch':
-        A = k_feats @ k_feats.T
+        A = feats @ feats.T
+        if threshold_at_zero:
+            A = (A * (A > 0))
         eigenvalues, eigenvectors = torch.eig(A, eigenvectors=True)
     
     # Eigenvectors of affinity matrix with scipy
     elif which_matrix == 'affinity':
-        A = (k_feats @ k_feats.T).cpu().numpy()
+        A = (feats @ feats.T).cpu().numpy()
+        if threshold_at_zero:
+            A = (A * (A > 0))
         eigenvalues, eigenvectors = eigsh(A, which='LM', k=K)
         eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,)).T
     
     # Eigenvectors of laplacian matrix
     elif which_matrix == 'laplacian':
-        A = (k_feats @ k_feats.T)
-        W_sm = (A * (A > 0)).cpu().numpy()
+        A = (feats @ feats.T)
+        if threshold_at_zero:
+            A = (A * (A > 0))
+        W_sm = A.cpu().numpy()
         W_sm = W_sm / W_sm.max()
         # diag = W_sm @ np.ones(W_sm.shape[0])
         # diag[diag < 1e-12] = 1.0
@@ -169,16 +187,21 @@ def _extract_eig(
         image_lr = np.array(image_lr) / 255.
 
         # Get color affinities
-        W_lr = utils.knn_affinity(image_lr / 255)
+        if which_color_matrix == 'knn':
+            W_lr = utils.knn_affinity(image_lr / 255)
+        elif which_color_matrix == 'rw':
+            W_lr = utils.rw_affinity(image_lr / 255)
         W_color = np.array(W_lr.todense().astype(np.float32))
 
         # Get semantic affinities
-        k_feats_lr = F.interpolate(
-            k_feats.T.reshape(1, -1, H_patch, W_patch), 
+        feats_lr = F.interpolate(
+            feats.T.reshape(1, -1, H_patch, W_patch), 
             size=(H_pad_lr, W_pad_lr), mode='bilinear', align_corners=False
         ).reshape(-1, H_pad_lr * W_pad_lr).T
-        A_sm_lr = k_feats_lr @ k_feats_lr.T
-        W_sm_lr = (A_sm_lr * (A_sm_lr > 0)).cpu().numpy()
+        A_sm_lr = feats_lr @ feats_lr.T
+        if threshold_at_zero:
+            A_sm_lr = (A_sm_lr * (A_sm_lr > 0))
+        W_sm_lr = A_sm_lr.cpu().numpy()
         W_sm_lr = W_sm_lr / W_sm_lr.max()
 
         # Combine
@@ -207,6 +230,9 @@ def extract_eigs(
     features_dir: str,
     output_dir: str,
     which_matrix: str = 'laplacian',
+    which_color_matrix: str = 'knn',
+    which_features: str = 'k',
+    threshold_at_zero: bool = True,
     K: int = 20,
     image_downsample_factor: Optional[int] = None,
     image_color_lambda: float = 0.0,
@@ -221,7 +247,9 @@ def extract_eigs(
         --output_dir "./data/VOC2012/eigs/laplacian" \
     """
     utils.make_output_dir(output_dir)
-    fn = partial(_extract_eig, K=K, which_matrix=which_matrix, images_root=images_root, output_dir=output_dir, 
+    fn = partial(_extract_eig, K=K, 
+                 which_matrix=which_matrix, which_features=which_features, which_color_matrix=which_color_matrix,
+                 threshold_at_zero=threshold_at_zero, images_root=images_root, output_dir=output_dir, 
                  image_downsample_factor=image_downsample_factor, image_color_lambda=image_color_lambda)
     inputs = list(enumerate(sorted(Path(features_dir).iterdir())))
     utils.parallel_process(inputs, fn, multiprocessing)

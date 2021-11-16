@@ -14,6 +14,7 @@ import time
 import torch
 from torch.utils.data import Dataset
 from pymatting.util.kdtree import knn
+from pymatting.laplacian.rw_laplacian import _rw_laplacian
 import scipy.sparse
 
 
@@ -103,7 +104,7 @@ def get_paired_input_files(path1: str, path2: str):
     return list(enumerate(zip(files1, files2)))
 
 
-def make_output_dir(output_dir, check_if_empty=False):
+def make_output_dir(output_dir, check_if_empty=True):
     output_dir = Path(output_dir) 
     output_dir.mkdir(exist_ok=True, parents=True)
     if check_if_empty and (len(list(output_dir.iterdir())) > 0):
@@ -223,6 +224,14 @@ def knn_affinity(image, n_neighbors=[20, 10], distance_weights=[2.0, 0.1]):
 
     # This is our affinity matrix
     W = scipy.sparse.csr_matrix((coo_data, (ij, ji)), (n, n))
+    return W
+
+
+def rw_affinity(image, sigma=0.033, radius=1):
+    h, w = image.shape[:2]
+    n = h * w
+    values, i_inds, j_inds = _rw_laplacian(image, sigma, radius)
+    W = scipy.sparse.csr_matrix((values, (i_inds, j_inds)), shape=(n, n))
     return W
 
 

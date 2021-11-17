@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import math
 import torch
+from torch.functional import _return_counts
 import torch.nn.functional as F
 from skimage.color import label2rgb
 from skimage.measure import label as measure_label
@@ -310,7 +311,102 @@ for stem in input_stems:
 print('Done')
 
 # %% 
+############# Segmentation figure #############
+
+
+############# Images for diagram #############
+
+# input_stems = ['2007_000033', '2007_000042', '2007_000061', '2007_000123', '2007_000175']  # , '2007_000187', '2007_000323', '2007_000332', '2007_000346']
+# input_stems = ['2011_001775','2011_002247','2011_001292','2007_009794','2009_003756','2010_005108','2011_002575','2009_000716','2007_000559','2009_004497']
+# input_stems = ['2008_006063', '2010_001579', '2007_001763', '2008_008051', '2009_004882', '2007_003188', '2009_002221', '2007_007165', '2009_000771', '2011_001988']
+input_stems = ['2007_000042', '2007_000061', '2007_000123', '2007_001763', '2007_001884']
+# input_stems = ['2009_001768', '2010_001376', '2009_003059', '2010_002142', '2007_000727', '2007_003088', '2010_001327', '2011_000566', '2010_003947', '2007_001299', '2007_006086', '2010_004559', '2007_008964', '2007_001884', '2007_008547', '2008_007194', '2009_003323', '2010_005664', '2007_007688', '2009_000488']
+# input_stems = input_stems[15:20]
+
+# input_stems = ['2007_000033', '2007_000042', '2007_001763', '2009_004882']
+
+
+# New paths
+preds_dir = Path('/data_q1_d/extra-storage/found_new/outputs/generate/2021-11-17--00-10-22/preds')
+gt_dir = Path('/data_q1_d/extra-storage/found_new/outputs/generate/2021-11-17--00-10-22/gt')
+mc_dir = Path('/data_q1_d/extra-storage/found_new/outputs/scp_from_maskcontrast')
+
+# Colors
+colors = get_cmap('tab20', 21).colors[:, :3][::-1]
+
+# Show images
+nrow = 4
+img_tensors = []
+for stem in input_stems:
+    image = Image.open(images_root / f'{stem}.jpg')
+    pred_image = Image.open(preds_dir / f'{stem}.png')
+    gt_image = Image.open(gt_dir / f'{stem}.png')
+    mc_image = np.load(mc_dir / f'{stem}.npy').astype(np.uint8)  # maskcontrast image
+    mc_image = Image.fromarray(mc_image).resize(image.size, resample=Image.NEAREST)
+    assert image.size == pred_image.size == gt_image.size, (image.size, pred_image.size, gt_image.size)
+    assert image.size == mc_image.size, (image.size, mc_image.size)
+
+    # Pred and ground truth
+    pred = np.array(pred_image)
+    gt = np.array(gt_image)
+    mc = np.array(mc_image)
+
+    # Unknown region --> 0
+    pred[pred == 255] = 0
+    gt[gt == 255] = 0
+
+    # Color
+    pred_label_indices, pred_label_counts = np.unique(pred, return_counts=True)
+    gt_label_indices, gt_label_counts = np.unique(gt, return_counts=True)
+    mc_label_indices, mc_label_counts = np.unique(mc, return_counts=True)
+    # 
+    blank_pred_overlay = label2rgb(label=pred, image=np.full_like(image, 128), colors=colors[pred_label_indices[pred_label_indices != 0]], bg_label=0, alpha=1.0)
+    blank_gt_overlay = label2rgb(label=gt, image=np.full_like(image, 128), colors=colors[gt_label_indices[gt_label_indices != 0]], bg_label=0, alpha=1.0)
+    blank_mc_overlay = label2rgb(label=mc, image=np.full_like(image, 128), colors=colors[mc_label_indices[mc_label_indices != 0]], bg_label=0, alpha=1.0)
+    # 
+    image_pred_overlay = label2rgb(label=pred, image=np.array(image), colors=colors[pred_label_indices[pred_label_indices != 0]], bg_label=0, alpha=0.8)
+    image_gt_overlay = label2rgb(label=gt, image=np.array(image), colors=colors[gt_label_indices[gt_label_indices != 0]], bg_label=0, alpha=0.8)
+    image_mc_overlay = label2rgb(label=mc, image=np.array(image), colors=colors[pred_label_indices[pred_label_indices != 0]], bg_label=0, alpha=0.8)
+    # 
+    pred_image = Image.fromarray((image_pred_overlay * 255).astype(np.uint8))
+    gt_image = Image.fromarray((image_gt_overlay * 255).astype(np.uint8))
+    mc_image = Image.fromarray((image_mc_overlay * 255).astype(np.uint8))
+
+    # Torch
+    for img in [image, mc_image, pred_image, gt_image]:
+        img_tensors.append(TF.to_tensor(TF.center_crop(TF.resize(img, size=384, interpolation=TF.InterpolationMode.NEAREST), 384)))
+
+# Stack
+output_file_semseg = 'figures/semseg-comparison.png'
+img_tensor_grid = make_grid(img_tensors, nrow=nrow, pad_value=1)
+image_grid = TF.to_pil_image(img_tensor_grid)
+image_grid.save(output_file_semseg)
+print(f'Saved to {output_file_semseg}')
+display(image_grid)
+print('Done')
+
+
+
+# %% 
 ############# Matting figure #############
 
+# %% 
 
+# # Quick script 
+# from tqdm import tqdm
+# nrow = 3
+# img_tensors = []
+# pbar = tqdm(preds_dir.iterdir())
+# nseg = 0
+# _files = []
+# for i, p in enumerate(pbar):
+#     _pred, counts = np.unique(np.array(Image.open(p)), return_counts=True)
+#     nseg += len(pred)
+#     if len(counts) > 2:
+#         _files.append((p.name, counts[2].item(), counts, _pred))
+#     if i % 10 == 0:
+#         pbar.set_description(f"{i/nseg}")
 
+# _sorted_files = sorted(_files, key=lambda x: -x[2].min())[:100]
+
+# %%

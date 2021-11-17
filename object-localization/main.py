@@ -314,6 +314,7 @@ def main():
                     patch_mask = (eigenvectors[0] > 0)
             else:
                 patch_mask = (eigenvectors[1] > 0)
+                # patch_mask = patch_mask[1:]  # NOTE: <-- if you're evaluating ['out'] features
             pred = get_bbox_from_patch_mask(patch_mask, init_image_size)
             # P = args.precomputed_eigs_downsample
             # dims_wh = (img.shape[-2] // P, img.shape[-1] // P)

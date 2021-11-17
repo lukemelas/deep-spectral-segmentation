@@ -47,6 +47,9 @@ def extract_features(
             --batch_size 1
     """
 
+    # Output
+    utils.make_output_dir(output_dir)
+
     # Models
     model_name_lower = model_name.lower()
     model, val_transform, patch_size, num_heads = utils.get_model(model_name_lower)
@@ -97,11 +100,11 @@ def extract_features(
         else:
             # out = accelerator.unwrap_model(model).get_intermediate_layers(images)[0].squeeze(0)
             out = model.get_intermediate_layers(images.to(accelerator.device))[0].squeeze(0)
-            # output_dict['out'] = out
+            output_dict['out'] = out
             output_qkv = feat_out["qkv"].reshape(B, T, 3, num_heads, -1 // num_heads).permute(2, 0, 3, 1, 4)
-            # output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+            output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
             output_dict['k'] = output_qkv[1].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
-            # output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+            output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
 
         # Metadata
         output_dict['indices'] = indices[0]
@@ -126,6 +129,7 @@ def _extract_eig(
     output_dir: str,
     which_matrix: str = 'laplacian',
     which_features: str = 'k',
+    normalize: bool = False,
     which_color_matrix: str = 'knn',
     threshold_at_zero: bool = True,
     image_downsample_factor: Optional[int] = None,
@@ -144,6 +148,8 @@ def _extract_eig(
 
     # Load affinity matrix
     feats = data_dict[which_features].squeeze()
+    if normalize:
+        feats = F.normalize(feats, p=2, dim=-1)
 
     # Eigenvectors of affinity matrix
     if which_matrix == 'affinity_torch':
@@ -239,6 +245,7 @@ def extract_eigs(
     which_matrix: str = 'laplacian',
     which_color_matrix: str = 'knn',
     which_features: str = 'k',
+    normalize: bool = False,
     threshold_at_zero: bool = True,
     K: int = 20,
     image_downsample_factor: Optional[int] = None,
@@ -254,10 +261,11 @@ def extract_eigs(
         --output_dir "./data/VOC2012/eigs/laplacian" \
     """
     utils.make_output_dir(output_dir)
-    fn = partial(_extract_eig, K=K, 
-                 which_matrix=which_matrix, which_features=which_features, which_color_matrix=which_color_matrix,
-                 threshold_at_zero=threshold_at_zero, images_root=images_root, output_dir=output_dir, 
+    kwargs = dict(K=K, which_matrix=which_matrix, which_features=which_features, which_color_matrix=which_color_matrix,
+                 normalize=normalize, threshold_at_zero=threshold_at_zero, images_root=images_root, output_dir=output_dir, 
                  image_downsample_factor=image_downsample_factor, image_color_lambda=image_color_lambda)
+    print(kwargs)
+    fn = partial(_extract_eig, **kwargs)
     inputs = list(enumerate(sorted(Path(features_dir).iterdir())))
     utils.parallel_process(inputs, fn, multiprocessing)
 
@@ -623,6 +631,91 @@ def extract_semantic_segmentations(
     print(f'Saved features to {output_dir}')
 
 
+def extract_baseline_semantic_segmentations(
+    features_dir: str,
+    output_dir: str,
+    normalize: bool = False,
+    num_clusters: int = 21,
+    pca_dim: int = 0,
+    seed: int = 0,
+    method: str = 'cluster',
+):
+    """
+    Example:
+        python extract.py extract_baseline_semantic_segmentations \
+            --features_dir "./data/VOC2012/features/dino_vitb16" \
+            --output_dir "./data/VOC2012/semantic_segmentations/patches/dino_vitb16_cluster_baseline" \
+    """
+
+    # Output
+    utils.make_output_dir(output_dir)
+    output_dir = Path(output_dir)
+
+    # Files
+    feature_files = sorted(list(Path(features_dir).iterdir()))
+
+    # First loop over the features and stack them
+    all_features = []
+    for f in tqdm(feature_files, desc='Loading'):
+        data_dict = torch.load(f)
+        all_features.append(data_dict['k'])
+        # Check
+        B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
+        assert H_patch * W_patch == data_dict['k'].squeeze().shape[0]
+    all_features = torch.cat(all_features, dim=1).squeeze()
+    if normalize:
+        all_features = all_features / torch.norm(all_features, dim=-1, keepdim=True)  # (numBbox, D)
+    all_features = all_features.numpy()
+    print(f'Loaded features with shape {all_features.shape}')
+
+    # Cluster: PCA
+    if pca_dim:
+        pca = PCA(pca_dim)
+        print(f'Computing PCA with dimension {pca_dim}')
+        all_features = pca.fit_transform(all_features)
+
+    # Cluster: K-Means
+    if method == 'cluster':
+        num_classes = num_clusters
+        print(f'Computing K-Means clustering with {num_classes} clusters')
+        kmeans = MiniBatchKMeans(n_clusters=num_classes, batch_size=4096, max_iter=5000, random_state=seed)
+        clusters = kmeans.fit_predict(all_features)
+    else:
+        raise NotImplementedError(method)
+
+    # Print 
+    _indices, _counts = np.unique(clusters, return_counts=True)
+    print(f'Cluster shape: {clusters.shape}')
+    print(f'Cluster indices: {_indices.tolist()}')
+    print(f'Cluster counts: {_counts.tolist()}')
+
+    # Loop over boxes and add clusters
+    idx = 0
+    for feature_file in tqdm(feature_files, desc='Saving'):
+
+        # Load data 
+        data_dict = torch.load(feature_file)
+
+        # Output file
+        image_id = data_dict['file'][:-4]
+        output_file = output_dir / f'{image_id}.png'
+        
+        # Get sizes
+        B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
+
+        # Total number of patches; should equal size of our image at this point
+        num_patches = H_patch * W_patch
+        semantic_map = clusters[idx: idx + num_patches].reshape(H_patch, W_patch)
+        idx = idx + num_patches
+
+        # Save image
+        Image.fromarray(semantic_map.astype(np.uint8)).convert('L').save(output_file)
+
+    # Check 
+    assert idx == len(clusters), f'{idx=} but {clusters.shape=}'
+    print('Done')
+
+
 def _extract_crf_segmentations(
     inp: Tuple[int, Tuple[str, str]], 
     images_root: str,
@@ -802,6 +895,8 @@ if __name__ == '__main__':
         extract_crf_segmentations=extract_crf_segmentations,  # step 8
         # single
         extract_single_region_segmentations=extract_single_region_segmentations, 
+        # baselines
+        extract_baseline_semantic_segmentations=extract_baseline_semantic_segmentations, 
         # vis
         vis_segmentations=vis_segmentations,  # optional
     ))

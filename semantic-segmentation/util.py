@@ -273,7 +273,6 @@ def resume_from_checkpoint(cfg, model, optimizer=None, scheduler=None, model_ema
         print(f' - Missing_keys: {missing_keys}')
     if len(unexpected_keys):
         print(f' - Unexpected_keys: {unexpected_keys}')
-    
     # Resume model ema
     if cfg.ema.use_ema:
         if checkpoint['model_ema']:

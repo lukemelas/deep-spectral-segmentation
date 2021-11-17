@@ -16,6 +16,7 @@ def _resize_pseudolabel(pseudolabel, img): # HACK HACK HACK
         (pseudolabel.shape[0] == 2 * (img.shape[0] // 16))
     ):
         return cv2.resize(pseudolabel, dsize=img.shape[:2][::-1], interpolation=cv2.INTER_NEAREST)
+    return pseudolabel
 
 
 class VOCSegmentationWithPseudolabelsBase(VisionDataset):

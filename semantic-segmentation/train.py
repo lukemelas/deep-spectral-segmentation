@@ -67,7 +67,7 @@ def main(cfg: DictConfig):
 
     # Resume from checkpoint and create the initial training state
     if cfg.checkpoint.resume:
-        train_state: utils.TrainState = utils.resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema)
+        train_state: utils.TrainState = utils.resume_from_checkpoint(cfg, model, optimizer, scheduler, model_ema=None)
     else:
         train_state = utils.TrainState()  # start training from scratch
 
@@ -106,6 +106,11 @@ def main(cfg: DictConfig):
         accelerator=accelerator,
         model_ema=model_ema,
         train_state=train_state)
+
+    # Evaluation
+    if cfg.job_type == 'generate':
+        test_stats = generate(**kwargs)
+        return 0
 
     # Evaluation
     if cfg.job_type == 'eval':
@@ -391,6 +396,48 @@ def evaluate(
     print(f'Full eval result: {eval_result}')
     print('mIoU is %.2f' % (100*eval_result['mIoU']))
     return eval_result
+
+
+
+@torch.no_grad()
+def generate(
+        *,
+        cfg: DictConfig,
+        model: torch.nn.Module,
+        dataloader_val: Iterable,
+        accelerator: Accelerator,
+        model_ema: Optional[object] = None,
+        evaluate_dataset_pseudolabels: bool = False,
+        **_unused_kwargs):
+    
+    # To avoid CUDA errors on my machine
+    torch.backends.cudnn.benchmark = False
+
+    # Eval mode
+    model.eval()
+    torch.cuda.synchronize()
+
+    # Create paths
+    preds_dir = Path('preds')
+    gt_dir = Path('gt')
+    preds_dir.mkdir(exist_ok=True, parents=True)
+    gt_dir.mkdir(exist_ok=True, parents=True)
+
+    # Generate and save
+    for (inputs, targets, _, metadata) in tqdm(dataloader_val, desc='Concatenating all predictions'):
+        # Predict
+        logits = model(inputs.to(accelerator.device).contiguous()).squeeze(0)  # (C, H, W)
+        # Convert
+        preds = torch.argmax(logits, dim=0).cpu().numpy().astype(np.uint8)
+        gt = targets.squeeze().numpy().astype(np.uint8)
+        # Save
+        Image.fromarray(preds).convert('L').save(preds_dir / f"{metadata[0]['id']}.png")
+        Image.fromarray(gt).convert('L').save(gt_dir / f"{metadata[0]['id']}.png")
+    
+    print(f'Saved to {Path(".").absolute()}')
+
+
+
 
 
 if __name__ == '__main__':

@@ -45,9 +45,11 @@ def get_datasets(cfg):
     train_transforms_tuple, val_transform = get_transforms(**cfg.data.transform)
 
     # Get the label map
-    if cfg.matching is not None:
+    if cfg.matching:
         matching = dict(eval(str(cfg.matching)))
         print(f'Using matching: {matching}')
+    else:
+        matching = None
 
     # Training dataset
     dataset_train = VOCSegmentationWithPseudolabelsContrastive(

@@ -50,7 +50,7 @@ def parse_args():
     )
     parser.add_argument(
         "--set",
-        default="train",
+        default="trainval",
         type=str,
         choices=["val", "train", "trainval", "test"],
         help="Path of the image to load.",
@@ -115,8 +115,8 @@ def parse_args():
     parser.add_argument("--precomputed_eigs_dir", default=None, type=str, 
                         help='Apply eigenvalue method with precomputed bboxes')
     parser.add_argument("--precomputed_eigs_downsample", default=16, type=str)
-    parser.add_argument("--which_matrix", choices=['affinity_torch', 'affinity', 'laplacian', 'matting_laplacian'],
-                        default='affinity_torch', help='Which matrix to use for eigenvector calculation')
+    parser.add_argument("--which_matrix", choices=['infer', 'affinity', 'laplacian'],
+                        default='infer', help='Which matrix to use for eigenvector calculation')
 
     # Parse
     args = parser.parse_args()
@@ -300,21 +300,22 @@ def main():
         elif args.eigenseg and args.precomputed_eigs_dir is not None:
 
             # Load
-            fname = im_name.replace('.jpg', '.pth') if 'VOC07' in dataset.name else im_name.replace('.jpg', '.pth')
+            if 'COCO' in dataset.name:
+                fname = f"COCO_train2014_{int(im_name):012d}.pth"
+            elif 'VOC' in dataset.name:
+                fname = im_name.replace('.jpg', '.pth')
             precomputed_eigs_file = os.path.join(args.precomputed_eigs_dir, fname)
             precomputed_eigs = torch.load(precomputed_eigs_file, map_location='cpu')
             eigenvectors = precomputed_eigs['eigenvectors']  # tensor of shape (K, H_lr * W_lr)
 
             # Get eigenvectors 
-            assert ('affinity' in args.which_matrix) ^ ('laplacian' in args.which_matrix)
-            if 'affinity' in args.which_matrix:
-                if eigenvectors.shape[0] > eigenvectors.shape[1]:  # HACK
-                    patch_mask = (eigenvectors[:, 0] > 0)
-                else:
-                    patch_mask = (eigenvectors[0] > 0)
+            if args.which_matrix == 'infer':  # get the type
+                which_matrix = Path(args.precomputed_eigs_dir).name.split('_')[0]
             else:
-                patch_mask = (eigenvectors[1] > 0)
-                # patch_mask = patch_mask[1:]  # NOTE: <-- if you're evaluating ['out'] features
+                which_matrix = args.which_matrix
+            segment_index = {'matting': 1, 'laplacian': 1, 'affinity': 0}[which_matrix]
+            patch_mask = (eigenvectors[segment_index] > 0)
+            # patch_mask = patch_mask[1:]  # NOTE: <-- if you're evaluating ['out'] features
             pred = get_bbox_from_patch_mask(patch_mask, init_image_size)
             # P = args.precomputed_eigs_downsample
             # dims_wh = (img.shape[-2] // P, img.shape[-1] // P)

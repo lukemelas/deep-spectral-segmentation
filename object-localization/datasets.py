@@ -8,6 +8,7 @@ import skimage.io
 from PIL import Image
 from tqdm import tqdm
 from torchvision import transforms as pth_transforms
+from traitlets.traitlets import default
 
 
 class ImageDataset:
@@ -61,6 +62,7 @@ class Dataset:
             raise ValueError("Unknown dataset.")
 
         if not os.path.exists(self.root_path):
+            print(self.root_path)
             raise ValueError("Please follow the README to setup the datasets.")
 
         self.name = f"{self.dataset_name}_{self.set}"
@@ -327,14 +329,29 @@ def select_coco_20k(sel_file, all_annotations_file):
         sel_20k = [s.replace("\n", "") for s in sel_20k]
     im20k = [str(int(s.split("_")[-1].split(".")[0])) for s in sel_20k]
 
-    new_anno = []
-    new_images = []
 
-    for i in tqdm(im20k):
-        new_anno.extend(
-            [a for a in train2014["annotations"] if a["image_id"] == int(i)]
-        )
-        new_images.extend([a for a in train2014["images"] if a["id"] == int(i)])
+    # # OLD
+    # new_anno = []
+    # new_images = []
+    # for i in tqdm(im20k):
+    #     new_anno.extend(
+    #         [a for a in train2014["annotations"] if a["image_id"] == int(i)]
+    #     )
+    #     new_images.extend([a for a in train2014["images"] if a["id"] == int(i)])
+
+    # NEW
+    from collections import defaultdict
+    id_to_ann = defaultdict(list)  # image_id --> [annotations]
+    id_to_img = defaultdict(list)  # image_id --> [images]
+    for a in tqdm(train2014["annotations"]):
+        id_to_ann[a["image_id"]].append(a)
+    for im in tqdm(train2014["images"]):
+        id_to_img[im["id"]].append(a)
+    new_anno = [id_to_ann[int(id)] for id in im20k]
+    new_images = [id_to_img[int(id)] for id in im20k]
+    print(len(im20k))
+    print(len(new_anno))
+    print(len(new_images))
 
     train2014_20k = {}
     train2014_20k["images"] = new_images

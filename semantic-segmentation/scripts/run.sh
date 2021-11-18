@@ -16,9 +16,9 @@
 ################################ 
 
 # Generate given a trained model
-CUDA_VISIBLE_DEVICES=0 python train.py name=generate job_type=generate \
-checkpoint.resume="$PWD/semantic-segmentation/outputs/resnet50_lr_2e-4_lamcon_/2021-11-16--21-19-52/" \
-
+CUDA_VISIBLE_DEVICES=0 python train.py name=generate job_type=generate wandb=False \
+checkpoint.resume="$PWD/outputs/resnet50_lr_2e-4_lamcon_/2021-11-16--21-19-52/checkpoint-best.pth" \
+segments_dir="${PWD}/../preprocess/extract/data/VOC2012/semantic_segmentations/patches/laplacian_dino_vitb8_fixed_15/segmaps_e_d12_pca_0_s10"
 
 
 ################################ 

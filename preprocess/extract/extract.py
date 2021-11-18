@@ -4,6 +4,7 @@ from collections import defaultdict
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
+from numba.core.errors import DeprecationError
 from scipy.sparse.linalg import eigsh
 from skimage.measure import label as measure_label
 from skimage.measure import perimeter as measure_perimeter
@@ -100,11 +101,11 @@ def extract_features(
         else:
             # out = accelerator.unwrap_model(model).get_intermediate_layers(images)[0].squeeze(0)
             out = model.get_intermediate_layers(images.to(accelerator.device))[0].squeeze(0)
-            output_dict['out'] = out
+            # output_dict['out'] = out
             output_qkv = feat_out["qkv"].reshape(B, T, 3, num_heads, -1 // num_heads).permute(2, 0, 3, 1, 4)
-            output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+            # output_dict['q'] = output_qkv[0].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
             output_dict['k'] = output_qkv[1].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
-            output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
+            # output_dict['v'] = output_qkv[2].transpose(1, 2).reshape(B, T, -1)[:, 1:, :]
 
         # Metadata
         output_dict['indices'] = indices[0]
@@ -130,6 +131,7 @@ def _extract_eig(
     which_matrix: str = 'laplacian',
     which_features: str = 'k',
     normalize: bool = False,
+    lapnorm: bool = True,
     which_color_matrix: str = 'knn',
     threshold_at_zero: bool = True,
     image_downsample_factor: Optional[int] = None,
@@ -144,88 +146,93 @@ def _extract_eig(
     # Load
     output_file = str(Path(output_dir) / f'{image_id}.pth')
     if Path(output_file).is_file():
+        print(f'Skipping existing file {str(output_file)}')
         return  # skip because already generated
 
     # Load affinity matrix
-    feats = data_dict[which_features].squeeze()
+    feats = data_dict[which_features].squeeze().cuda()
     if normalize:
         feats = F.normalize(feats, p=2, dim=-1)
 
     # Eigenvectors of affinity matrix
     if which_matrix == 'affinity_torch':
-        A = feats @ feats.T
+        W = feats @ feats.T
         if threshold_at_zero:
-            A = (A * (A > 0))
-        eigenvalues, eigenvectors = torch.eig(A, eigenvectors=True)
+            W = (W * (W > 0))
+        eigenvalues, eigenvectors = torch.eig(W, eigenvectors=True)
+        eigenvalues = eigenvalues.cpu()
+        eigenvectors = eigenvectors.cpu()
     
     # Eigenvectors of affinity matrix with scipy
     elif which_matrix == 'affinity':
-        A = (feats @ feats.T).cpu().numpy()
+        W = (feats @ feats.T)
         if threshold_at_zero:
-            A = (A * (A > 0))
-        eigenvalues, eigenvectors = eigsh(A, which='LM', k=K)
+            W = (W * (W > 0))
+        W = W.cpu().numpy()
+        eigenvalues, eigenvectors = eigsh(W, which='LM', k=K)
         eigenvectors = torch.flip(torch.from_numpy(eigenvectors), dims=(-1,)).T
-    
-    # Eigenvectors of laplacian matrix
-    elif which_matrix == 'laplacian':
-        A = (feats @ feats.T)
-        if threshold_at_zero:
-            A = (A * (A > 0))
-        W_sm = A.cpu().numpy()
-        W_sm = W_sm / W_sm.max()
-        # diag = W_sm @ np.ones(W_sm.shape[0])
-        # diag[diag < 1e-12] = 1.0
-        D = utils.get_diagonal(W_sm)  # np.diag(diag)  # row sum
-        try:
-            eigenvalues, eigenvectors = eigsh(D - W_sm, k=K, sigma=0, which='LM', M=D)
-        except:
-            eigenvalues, eigenvectors = eigsh(D - W_sm, k=K, which='SM', M=D)
-        eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
 
     # Eigenvectors of matting laplacian matrix
-    elif which_matrix == 'matting_laplacian':
+    elif which_matrix in ['matting_laplacian', 'laplacian']:
 
         # Get sizes
         B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
         if image_downsample_factor is None:
             image_downsample_factor = P
         H_pad_lr, W_pad_lr = H_pad // image_downsample_factor, W_pad // image_downsample_factor
-        
-        # Load image
-        image_file = str(Path(images_root) / f'{image_id}.jpg')
-        image_lr = Image.open(image_file).resize((W_pad_lr, H_pad_lr), Image.BILINEAR)
-        image_lr = np.array(image_lr) / 255.
 
-        # Get color affinities
+        # Upscale features to match the resolution
+        if (H_patch, W_patch) != (H_pad_lr, W_pad_lr):
+            feats = F.interpolate(
+                feats.T.reshape(1, -1, H_patch, W_patch), 
+                size=(H_pad_lr, W_pad_lr), mode='bilinear', align_corners=False
+            ).reshape(-1, H_pad_lr * W_pad_lr).T
+
+        ### Feature affinities 
+        W_feat = (feats @ feats.T)
+        if threshold_at_zero:
+            W_feat = (W_feat * (W_feat > 0))
+        W_feat = W_feat / W_feat.max()  # NOTE: If features are normalized, this naturally does nothing
+        W_feat = W_feat.cpu().numpy()
+        
+        ### Color affinities 
+        # If we are fusing with color affinites, then load the image and compute
         if image_color_lambda > 0:
+
+            # Load image
+            image_file = str(Path(images_root) / f'{image_id}.jpg')
+            image_lr = Image.open(image_file).resize((W_pad_lr, H_pad_lr), Image.BILINEAR)
+            image_lr = np.array(image_lr) / 255.
+
+            # Color affinities (of type scipy.sparse.csr_matrix)
             if which_color_matrix == 'knn':
                 W_lr = utils.knn_affinity(image_lr / 255)
             elif which_color_matrix == 'rw':
                 W_lr = utils.rw_affinity(image_lr / 255)
+            
+            # Convert to dense numpy array
             W_color = np.array(W_lr.todense().astype(np.float32))
+        
         else:
+
+            # No color affinity
             W_color = 0
 
-        # Get semantic affinities
-        feats_lr = F.interpolate(
-            feats.T.reshape(1, -1, H_patch, W_patch), 
-            size=(H_pad_lr, W_pad_lr), mode='bilinear', align_corners=False
-        ).reshape(-1, H_pad_lr * W_pad_lr).T
-        A_sm_lr = feats_lr @ feats_lr.T
-        if threshold_at_zero:
-            A_sm_lr = (A_sm_lr * (A_sm_lr > 0))
-        W_sm_lr = A_sm_lr.cpu().numpy()
-        W_sm_lr = W_sm_lr / W_sm_lr.max()
-
         # Combine
-        W_comb = W_sm_lr + W_color * image_color_lambda  # combination
+        W_comb = W_feat + W_color * image_color_lambda  # combination
         D_comb = np.array(utils.get_diagonal(W_comb).todense())  # is dense or sparse faster? not sure, should check
 
         # Extract eigenvectors
-        try:
-            eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, sigma=0, which='LM', M=D_comb)
-        except:
-            eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, which='SM', M=D_comb)
+        if lapnorm:
+            try:
+                eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, sigma=0, which='LM', M=D_comb)
+            except:
+                eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, which='SM', M=D_comb)
+        else:
+            try:
+                eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, sigma=0, which='LM')
+            except:
+                eigenvalues, eigenvectors = eigsh(D_comb - W_comb, k=K, which='SM')
         eigenvalues, eigenvectors = torch.from_numpy(eigenvalues), torch.from_numpy(eigenvectors.T).float()
 
     # Sign ambiguity
@@ -247,6 +254,7 @@ def extract_eigs(
     which_features: str = 'k',
     normalize: bool = False,
     threshold_at_zero: bool = True,
+    lapnorm: bool = True,
     K: int = 20,
     image_downsample_factor: Optional[int] = None,
     image_color_lambda: float = 0.0,
@@ -263,7 +271,7 @@ def extract_eigs(
     utils.make_output_dir(output_dir)
     kwargs = dict(K=K, which_matrix=which_matrix, which_features=which_features, which_color_matrix=which_color_matrix,
                  normalize=normalize, threshold_at_zero=threshold_at_zero, images_root=images_root, output_dir=output_dir, 
-                 image_downsample_factor=image_downsample_factor, image_color_lambda=image_color_lambda)
+                 image_downsample_factor=image_downsample_factor, image_color_lambda=image_color_lambda, lapnorm=lapnorm)
     print(kwargs)
     fn = partial(_extract_eig, **kwargs)
     inputs = list(enumerate(sorted(Path(features_dir).iterdir())))
@@ -287,8 +295,9 @@ def _extract_multi_region_segmentations(
     # Output file
     id = Path(data_dict['id'])
     output_file = str(Path(output_dir) / f'{id}.png')
-    # if Path(output_file).is_file():
-    #     return  # skip because already generated
+    if Path(output_file).is_file():
+        print(f'Skipping existing file {str(output_file)}')
+        return  # skip because already generated
 
     # Sizes
     B, C, H, W, P, H_patch, W_patch, H_pad, W_pad = utils.get_image_sizes(data_dict)
@@ -377,6 +386,7 @@ def _extract_single_region_segmentations(
     id = Path(data_dict['id'])
     output_file = str(Path(output_dir) / f'{id}.png')
     if Path(output_file).is_file():
+        print(f'Skipping existing file {str(output_file)}')
         return  # skip because already generated
 
     # Sizes
@@ -729,8 +739,9 @@ def _extract_crf_segmentations(
     # Output file
     id = Path(image_file).stem
     output_file = str(Path(output_dir) / f'{id}.png')
-    # if Path(output_file).is_file():
-    #     return  # skip because already generated
+    if Path(output_file).is_file():
+        print(f'Skipping existing file {str(output_file)}')
+        return  # skip because already generated
 
     # Load image and segmap
     image_file = str(Path(images_root) / f'{id}.jpg')

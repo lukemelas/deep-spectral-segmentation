@@ -16,6 +16,7 @@ eigs_dir="../preprocess/extract/data/${dataset}/eigs"
 # Stuff
 for d in $(ls ${eigs_dir})
 do
+    echo ""
     outdir="./outputs/${split}_train/$d"
     if [ -d ${outdir} ] && [ ! "$(echo "${outdir}/"*)" = "${outdir}/*" ]
     then

@@ -164,6 +164,12 @@ def _extract_eig(
         eigenvectors = eigenvectors.cpu()
     
     # Eigenvectors of affinity matrix with scipy
+    elif which_matrix == 'affinity_svd':        
+        USV = torch.linalg.svd(feats, full_matrices=False)
+        eigenvectors = USV[0][:, :K].T.to('cpu', non_blocking=True)
+        eigenvalues = USV[1][:K].to('cpu', non_blocking=True)
+
+    # Eigenvectors of affinity matrix with scipy
     elif which_matrix == 'affinity':
         W = (feats @ feats.T)
         if threshold_at_zero:

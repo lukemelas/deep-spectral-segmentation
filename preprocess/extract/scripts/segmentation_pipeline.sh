@@ -1,20 +1,20 @@
-# (1) Example set of parameters
-DATASET="VOC2012"
-MODEL="dino_vitb8"
-MATRIX="laplacian_dino_vitb8"
-DOWNSAMPLE=8
-N_SEG=15
-N_ERODE=6
-N_DILATE=12
-
-# # (2) Example set of parameters
+# # (1) Example set of parameters
 # DATASET="VOC2012"
-# MODEL="dino_vitb16"
-# MATRIX="laplacian_dino_vitb16"
-# DOWNSAMPLE=16
+# MODEL="dino_vitb8"
+# MATRIX="laplacian_dino_vitb8"
+# DOWNSAMPLE=8
 # N_SEG=15
-# N_ERODE=2
-# N_DILATE=5
+# N_ERODE=6
+# N_DILATE=12
+
+# (2) Example set of parameters
+DATASET="VOC2012"
+MODEL="dino_vitb16"
+MATRIX="laplacian_dino_vitb16"
+DOWNSAMPLE=16
+N_SEG=15
+N_ERODE=2
+N_DILATE=5
 
 # Message 
 echo "STARTING PIPELINE -- $(date)"

@@ -313,7 +313,7 @@ def main():
                 which_matrix = Path(args.precomputed_eigs_dir).name.split('_')[0]
             else:
                 which_matrix = args.which_matrix
-            segment_index = {'matting': 1, 'laplacian': 1, 'affinity': 0, 'svd': 0}[which_matrix]
+            segment_index = {'matting': 1, 'laplacian': 1, 'affinity': 0}[which_matrix]
             patch_mask = (eigenvectors[segment_index] > 0)
             # patch_mask = patch_mask[1:]  # NOTE: <-- if you're evaluating ['out'] features
             pred = get_bbox_from_patch_mask(patch_mask, init_image_size)

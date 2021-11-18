@@ -32,3 +32,12 @@ do
         --skip_if_exists
     fi
 done
+
+
+# # And here is an example of a single run:
+# d=affinity_mocov3_vitb16_16x_lambda_0.0_nonormalize_threshold_at_zero; dataset=VOC2007; split=VOC07; eigs_dir="../preprocess/extract/data/${dataset}/eigs"; python main.py \
+# --eigenseg \
+# --precomputed_eigs_dir ${eigs_dir}/${d} \
+# --dataset $split \
+# --name debug \
+# --skip_if_exists

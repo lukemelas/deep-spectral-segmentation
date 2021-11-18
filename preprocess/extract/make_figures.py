@@ -21,10 +21,14 @@ from IPython.display import display
 import extract_utils as utils
 
 # Global paths
-images_list = Path("./data/VOC2012/lists/images.txt")
-images_root = Path("./data/VOC2012/images")
-eigs_root = Path("./data/VOC2012/eigs")
-features_root = Path("./data/VOC2012/features")
+dataset = "VOC2012"
+root = Path("/data2/tmp/found_old")
+images_list = root / dataset / "lists/images.txt"
+images_root = root / dataset / f"images"
+eigs_root = root / dataset / f"eigs"
+features_root = root / dataset / f"features"
+seg_root = root / dataset / f"multi_region_segmentation"
+semseg_root = root / dataset / f"semantic_segmentations"
 
 # Prepare
 images_list = images_list.read_text().splitlines()
@@ -34,14 +38,14 @@ colors = get_cmap('tab20', 21).colors[:, :3]
 binary_colors = get_cmap('viridis')
 
 # Specific paths
-eigs_dir = 'laplacian'
-features_dir = 'dino_vits16'
-image_downsample_factor = 16
-output_file_eig = 'figures/eig-examples-failures-vits16.png'
-# eigs_dir = 'matting_laplacian_dino_vitb8_8x_lambda_0' 
-# features_dir = 'dino_vitb8'
-# image_downsample_factor = 8 
-# output_file_eig = 'figures/eig-examples-failures-vitb8.png'
+# eigs_dir = 'laplacian'
+# features_dir = 'dino_vits16'
+# image_downsample_factor = 16
+# output_file_eig = 'figures/eig-examples-failures-vits16.png'
+eigs_dir = 'matting_laplacian_dino_vitb8_8x_lambda_0' 
+features_dir = 'dino_vitb8'
+image_downsample_factor = 8 
+output_file_eig = 'figures/eig-examples-1-vitb8.png'
 
 # %% 
 
@@ -51,12 +55,13 @@ output_file_eig = 'figures/eig-examples-failures-vits16.png'
 # input_stems = ['2007_000027', '2007_000032', '2007_000033', '2007_000039', '2007_000042', '2007_000061']
 # input_stems = [f[:-4] for f in images_list[1100:1135]]
 # # Examples of stems
+input_stems = ['2007_000039', '2008_000099', '2008_000499', '2007_009446', '2007_001586', '2010_001256']  # example 1  
 # input_stems = ['2008_000764', '2008_000705', '2007_000039', '2008_000099', '2008_000499', '2007_009446', '2007_001586']  # example 1  
 # input_stems = ['2007_000241', '2007_001586', '2007_001587', '2007_001594', '2007_003020', '2008_000501', '2008_000502']  # example 2
 # input_stems = ['2008_000316', '2008_000699', '2007_000033', '2007_000061', '2007_009446',  '2007_000061', '2008_000753']  # example 3 
 # input_stems = ['2007_004275', '2007_000032', '2007_000027']
-# # Examples of failure cases
-input_stems = ['2007_004289', '2007_004291', '2007_005764', '2007_008085']
+# # # Examples of failure cases
+# input_stems = ['2007_004289', '2007_004291', '2007_005764', '2007_008085', '2010_001256']
 
 # Transform
 transform = T.Compose([T.Resize(512), T.CenterCrop(512), T.ToTensor()])
@@ -99,7 +104,8 @@ for stem in input_stems:
 img_tensor_grid = make_grid(img_tensors, nrow=nrow, pad_value=1)
 image = TF.to_pil_image(img_tensor_grid)
 # image.save(output_file_eig)
-# print(f'Saved to {output_file_eig}')
+print(f'Saved to {output_file_eig}')
+display(image)
 
 # %%
 
@@ -211,8 +217,8 @@ np_grid = np.vstack(np_rows)
 image_grid = Image.fromarray(np_grid)
 # image_grid.save(output_file_loc)
 # print(f'Saved to {output_file_loc}')
-display(image_grid)
 print(output_file_loc)
+display(image_grid)
 
 # %% 
 image_grid
@@ -262,21 +268,21 @@ for stem in input_stems:
 
     # Add to list
     image = transform(image)
-    image.save(f'figures/method-diagram-{stem}-image.png')
+    # image.save(f'figures/method-diagram-{stem}-image.png')
     for i in range(1, 3):
         eigenvector = eigenvectors[i].reshape(1, 1, H_pad_lr, W_pad_lr)
         eigenvector = F.interpolate(eigenvector, size=(H, W), mode='nearest')  # slightly off, but for visualizations this is okay
         plt.imsave('./tmp.png', eigenvector.squeeze().numpy())  # save to a temporary location
         eigenvector_image = Image.open('./tmp.png').convert('RGB') # load back from our temporary location
-        transform(eigenvector_image).save(f'figures/method-diagram-{stem}-evec-{i}.png')
+        # transform(eigenvector_image).save(f'figures/method-diagram-{stem}-evec-{i}.png')
     
     # Get eigenvector: largest connected component
     mask = F.interpolate(eigenvectors[1].reshape(1, 1, H_pad_lr, W_pad_lr), size=(H, W), mode='nearest')
     mask = TF.center_crop(TF.resize(mask, 512, interpolation=TF.InterpolationMode.NEAREST), 512)
     mask = (mask.squeeze().numpy() > 0)
     mask_largest_cc = get_largest_cc(mask)  # this or just the eigenvector? not sure, let's try this for now
-    Image.fromarray(mask).save(f'figures/method-diagram-{stem}-mask.png')
-    Image.fromarray(mask_largest_cc).save(f'figures/method-diagram-{stem}-mask-cc.png')
+    # Image.fromarray(mask).save(f'figures/method-diagram-{stem}-mask.png')
+    # Image.fromarray(mask_largest_cc).save(f'figures/method-diagram-{stem}-mask-cc.png')
 
     # Get bounding box
     where_mask = np.where(mask_largest_cc)
@@ -288,7 +294,7 @@ for stem in input_stems:
     img = (TF.to_tensor(image) * 255).to(torch.uint8)
     img_pred = draw_bounding_boxes(img, boxes=torch.tensor(boxes), width=10, colors=['limegreen'])
     image_pred = TF.to_pil_image(img_pred)
-    image_pred.save(f'figures/method-diagram-{stem}-bbox.png')
+    # image_pred.save(f'figures/method-diagram-{stem}-bbox.png')
 
     # Segmentations
     segmap = np.array(TF.center_crop(TF.resize(Image.open(seg_file), 512, interpolation=TF.InterpolationMode.NEAREST), 512))
@@ -305,16 +311,13 @@ for stem in input_stems:
     semseg_image = Image.fromarray((image_semseg_overlay * 255).astype(np.uint8))
 
     # Save
-    segmap_image.save(f'figures/method-diagram-{stem}-segmap.png')
-    semseg_image.save(f'figures/method-diagram-{stem}-semseg.png')
+    # segmap_image.save(f'figures/method-diagram-{stem}-segmap.png')
+    # semseg_image.save(f'figures/method-diagram-{stem}-semseg.png')
 
 print('Done')
 
 # %% 
 ############# Segmentation figure #############
-
-
-############# Images for diagram #############
 
 # input_stems = ['2007_000033', '2007_000042', '2007_000061', '2007_000123', '2007_000175']  # , '2007_000187', '2007_000323', '2007_000332', '2007_000346']
 # input_stems = ['2011_001775','2011_002247','2011_001292','2007_009794','2009_003756','2010_005108','2011_002575','2009_000716','2007_000559','2009_004497']
@@ -330,12 +333,12 @@ input_stems = ['2007_000042', '2007_000061', '2007_000123', '2007_001763', '2007
 preds_dir = Path('/data_q1_d/extra-storage/found_new/outputs/generate/2021-11-17--00-10-22/preds')
 gt_dir = Path('/data_q1_d/extra-storage/found_new/outputs/generate/2021-11-17--00-10-22/gt')
 mc_dir = Path('/data_q1_d/extra-storage/found_new/outputs/scp_from_maskcontrast')
+baseline_dir = Path('/data2/tmp/found_old/VOC2012/semantic_segmentations/patches/dino_vitb16_cluster_baseline/s0')
 
 # Colors
 colors = get_cmap('tab20', 21).colors[:, :3][::-1]
 
 # Show images
-nrow = 4
 img_tensors = []
 for stem in input_stems:
     image = Image.open(images_root / f'{stem}.jpg')
@@ -343,42 +346,51 @@ for stem in input_stems:
     gt_image = Image.open(gt_dir / f'{stem}.png')
     mc_image = np.load(mc_dir / f'{stem}.npy').astype(np.uint8)  # maskcontrast image
     mc_image = Image.fromarray(mc_image).resize(image.size, resample=Image.NEAREST)
-    assert image.size == pred_image.size == gt_image.size, (image.size, pred_image.size, gt_image.size)
+    baseline_image = Image.open(baseline_dir / f'{stem}.png')
+    baseline_image = baseline_image.resize(image.size, resample=Image.NEAREST)
+    assert image.size == pred_image.size == gt_image.size == baseline_image.size, (image.size, pred_image.size, gt_image.size, baseline_image.size)
     assert image.size == mc_image.size, (image.size, mc_image.size)
 
     # Pred and ground truth
     pred = np.array(pred_image)
     gt = np.array(gt_image)
     mc = np.array(mc_image)
+    baseline = np.array(baseline_image)
 
     # Unknown region --> 0
     pred[pred == 255] = 0
     gt[gt == 255] = 0
+    baseline[baseline == 255] = 0
 
     # Color
     pred_label_indices, pred_label_counts = np.unique(pred, return_counts=True)
     gt_label_indices, gt_label_counts = np.unique(gt, return_counts=True)
     mc_label_indices, mc_label_counts = np.unique(mc, return_counts=True)
+    baseline_label_indices, baseline_label_counts = np.unique(baseline, return_counts=True)
     # 
     blank_pred_overlay = label2rgb(label=pred, image=np.full_like(image, 128), colors=colors[pred_label_indices[pred_label_indices != 0]], bg_label=0, alpha=1.0)
     blank_gt_overlay = label2rgb(label=gt, image=np.full_like(image, 128), colors=colors[gt_label_indices[gt_label_indices != 0]], bg_label=0, alpha=1.0)
     blank_mc_overlay = label2rgb(label=mc, image=np.full_like(image, 128), colors=colors[mc_label_indices[mc_label_indices != 0]], bg_label=0, alpha=1.0)
+    blank_baseline_overlay = label2rgb(label=baseline, image=np.full_like(image, 128), colors=colors[baseline_label_indices[baseline_label_indices != 0]], bg_label=0, alpha=1.0)
     # 
     image_pred_overlay = label2rgb(label=pred, image=np.array(image), colors=colors[pred_label_indices[pred_label_indices != 0]], bg_label=0, alpha=0.8)
     image_gt_overlay = label2rgb(label=gt, image=np.array(image), colors=colors[gt_label_indices[gt_label_indices != 0]], bg_label=0, alpha=0.8)
     image_mc_overlay = label2rgb(label=mc, image=np.array(image), colors=colors[pred_label_indices[pred_label_indices != 0]], bg_label=0, alpha=0.8)
+    image_baseline_overlay = label2rgb(label=baseline, image=np.array(image), colors=colors[pred_label_indices[pred_label_indices != 0]], bg_label=0, alpha=0.8)
     # 
     pred_image = Image.fromarray((image_pred_overlay * 255).astype(np.uint8))
     gt_image = Image.fromarray((image_gt_overlay * 255).astype(np.uint8))
     mc_image = Image.fromarray((image_mc_overlay * 255).astype(np.uint8))
+    baseline_image = Image.fromarray((image_baseline_overlay * 255).astype(np.uint8))
 
     # Torch
-    for img in [image, mc_image, pred_image, gt_image]:
+    img_list = [image, baseline_image, mc_image, pred_image, gt_image]
+    for img in img_list:
         img_tensors.append(TF.to_tensor(TF.center_crop(TF.resize(img, size=384, interpolation=TF.InterpolationMode.NEAREST), 384)))
 
 # Stack
 output_file_semseg = 'figures/semseg-comparison.png'
-img_tensor_grid = make_grid(img_tensors, nrow=nrow, pad_value=1)
+img_tensor_grid = make_grid(img_tensors, nrow=len(img_list), pad_value=1)
 image_grid = TF.to_pil_image(img_tensor_grid)
 image_grid.save(output_file_semseg)
 print(f'Saved to {output_file_semseg}')

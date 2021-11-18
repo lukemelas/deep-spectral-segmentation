@@ -80,7 +80,7 @@ for i, p in enumerate(pbar):
     if i % 100 == 99:
         pbar.set_description(f"{i/nseg}")
     pred = np.array(Image.open(p))
-    gt = np.array(Image.open(str(p).replace('preds', 'gt'))) 
+    gt = np.array(Image.open(str(p).replace('preds', 'gt')))
     _pred, counts = np.unique(pred, return_counts=True)
     nseg += len(pred)
     # if len(counts) > 2:
@@ -88,16 +88,21 @@ for i, p in enumerate(pbar):
     _files.append((p.name, counts, _pred, acc))
 
 # _sorted_files = sorted(_files, key=lambda x: -x[3])[200:400]
-_sorted_files = sorted(_files, key=lambda x: -x[1].min())[:50]
+_sorted_files = sorted(_files, key=lambda x: -x[1].min())[:50] 
 # _sorted_files = sorted(_files, key=lambda x: -x[3])[:100]
 
 # %% 
 
 # Inputs
-# input_stems = ['2009_005089', '2009_000712', '2009_005137', '2010_004355', '2010_005531', '2007_001884', '2011_001350']
-# input_stems = ['2009_005089', '2009_000712', '2010_004355', '2011_001350']
-input_stems = [a[0][:-4] for a in _sorted_files]  # available_files
+# input_stems = ['2009_005089', '2009_000712', '2009_005137', '2010_004355', '2010_005531', '2007_001884', '2011_001350', '2007_006076', '2010_001011', '2010_001256', '2008_005245']
+# input_stems = ['2009_005089', '2009_000712', '2010_004355', '2011_001350', '2007_006076', '2010_001011', '2008_005245', '2010_001256']
+# input_stems = ['2010_004355', '2011_001350', '2007_006076', '2010_001011', '2008_005245', '2010_001256']
+input_stems = ['2011_001350', '2007_006076', '2010_001011', '2008_005245']
+# input_stems = ['2010_001256']
+# input_stems = [a[0][:-4] for a in _sorted_files]  # available_files
 # input_stems = choice(input_stems, size=(10,), replace=False)
+
+# NOTE: 2010_001256 should go in the eigensegment examples!!
 
 # Show images
 all_output_dicts = []
@@ -137,7 +142,7 @@ for stem in input_stems:
     output_dict['image'] = image
     
     # Add to list
-    for i in range(1, 4):
+    for i in range(1, 5):
         eigenvector = eigenvectors[i].reshape(1, 1, H_pad_lr, W_pad_lr)
         eigenvector = F.interpolate(eigenvector, size=(H, W), mode='nearest')  # slightly off, but for visualizations this is okay
         plt.imsave('./tmp/tmp-img-matplotlib.png', eigenvector.squeeze().numpy())  # save to a temporary location
@@ -202,34 +207,37 @@ for stem in input_stems:
     output_dict['semseg_pred'] = Image.fromarray((image_pred_overlay * 255).astype(np.uint8))
     output_dict['semseg_gt'] = Image.fromarray((image_gt_overlay * 255).astype(np.uint8))
 
-    # Create grid for now
-    tensor_grid = []
-    for k, v in output_dict.items():
-        if k in ['image', 'evec-1', 'evec-2', 'evec-3', 'bbox_image', 'segmap_image', 'semseg_pred', 'semseg_gt']:
-            img_tensor = TF.to_tensor(TF.resize(v, 128).convert('RGB'))  # temp resolution 128 for display
-            tensor_grid.append(img_tensor)
-    tensor_grid = make_grid(tensor_grid, nrow=len(tensor_grid))
-    tensor_grid_image = TF.to_pil_image(tensor_grid)
-    print(f'stem: {stem}')
-    display(tensor_grid_image)
-    print("\n\n\n")
+    # # Create grid for now
+    # tensor_grid = []
+    # for k, v in output_dict.items():
+    #     if k in ['image', 'evec-1', 'evec-2', 'evec-3', 'bbox_image', 'semseg_image']:  # 'semseg_pred', 'semseg_gt']:
+    #         img_tensor = TF.to_tensor(TF.resize(v, 128).convert('RGB'))  # temp resolution 128 for display
+    #         tensor_grid.append(img_tensor)
+    # tensor_grid = make_grid(tensor_grid, nrow=len(tensor_grid))
+    # tensor_grid_image = TF.to_pil_image(tensor_grid)
+    # print(f'stem: {stem}')
+    # display(tensor_grid_image)
+    # print("\n\n\n")
 
-    # # Add to grid for later
-    # all_output_dicts.append(output_dict)
+    # Add to grid for later
+    all_output_dicts.append(output_dict)
 
 # %%
 
-# # Create tensor grid
-# keys_to_show = ['image', 'evec-1', 'evec-2', 'evec-3', 'bbox_image', 'segmap_image', 'semseg_pred']
-# tensor_grid = []
-# for d in all_output_dicts:
-#     for k, v in d.items():
-#         if k in keys_to_show:
-#             img_tensor = TF.to_tensor(TF.resize(v, 384).convert('RGB'))  # temp resolution 128 for display
-#             tensor_grid.append(img_tensor)
-# tensor_grid = make_grid(tensor_grid, nrow=len(keys_to_show), pad_value=1.0)
-# tensor_grid_image = TF.to_pil_image(tensor_grid, )
+# Create tensor grid
+keys_to_show = ['image', 'evec-1', 'evec-2', 'evec-3', 'evec-4', 'bbox_image', 'semseg_image']
+tensor_grid = []
+for d in all_output_dicts:
+    for k, v in d.items():
+        if k in keys_to_show:
+            img_tensor = TF.to_tensor(TF.resize(v, 512).convert('RGB'))  # temp resolution 128 for display
+            tensor_grid.append(img_tensor)
+tensor_grid = make_grid(tensor_grid, nrow=len(keys_to_show), pad_value=1.0)
+tensor_grid_image = TF.to_pil_image(tensor_grid, )
 
-# tensor_grid_image
+tensor_grid_image
 
+# %%
+
+tensor_grid_image.save('figures/splash.png')
 # %%

@@ -102,7 +102,7 @@ class VOCSegmentationWithPseudolabelsBase(VisionDataset):
             target_dir = os.path.join(voc_root, self._TARGET_DIR)
             self.targets = [os.path.join(target_dir, x + self._TARGET_FILE_EXT) for x in file_names]
 
-            assert len(self.images) == len(self.targets)
+            assert len(self.images) == len(self.targets), ( len(self.images), len(self.targets))
 
     @property
     def masks(self) -> List[str]:
@@ -119,7 +119,7 @@ class VOCSegmentationWithPseudolabelsBase(VisionDataset):
         # Get segment and image files, which are assumed to be in correspondence
         all_segment_files = sorted(map(str, Path(segments_dir).iterdir()))
         all_img_files = sorted(Path(self.images[0]).parent.iterdir())
-        assert len(all_img_files) == len(all_segment_files)
+        assert len(all_img_files) == len(all_segment_files), (len(all_img_files), len(all_segment_files))
         # Create mapping because I named the segment files badly (sequentially instead of by image id)
         all_img_stems = [p.stem for p in all_img_files]
         valid_img_stems = set([Path(p).stem for p in self.images])  # in our split (e.g. 'val')

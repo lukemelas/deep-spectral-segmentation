@@ -1,5 +1,4 @@
 import { Heading, Wrap, Box, Link as ChakraLink } from '@chakra-ui/react'
-import { Container } from 'next/app'
 import NextLink from "next/link"
 
 import { title, institutions, authors } from 'data'
@@ -11,7 +10,7 @@ export const Title = () => (
 
 
 export const Authors = () => (
-  <Container>
+  <>
     <Wrap justify="center" pt="1rem" fontSize="xl" key="authors">
       {
         authors.map((author) =>
@@ -34,5 +33,5 @@ export const Authors = () => (
         )
       }
     </Wrap>
-  </Container>
+  </>
 )

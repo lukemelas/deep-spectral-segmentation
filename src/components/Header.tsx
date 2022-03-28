@@ -5,7 +5,7 @@ import { title, institutions, authors } from 'data'
 
 
 export const Title = () => (
-  <Heading fontSize="2xl" pt="3rem" maxW="42rem" textAlign="center">{title}</Heading>
+  <Heading fontSize="2xl" pt="3rem" pl="0.2rem" pr="0.2rem" maxW="42rem" textAlign="center">{title}</Heading>
 )
 
 

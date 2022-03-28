@@ -1,16 +1,16 @@
 // Project title
-export const title = "Title"
+export const title = "Deep Spectral Methods: A Surprisingly Strong Baseline for Unsupervised Semantic Segmentation and Localization"
 
 // Short version of the abstract
-export const description = "Short version of abstract"
+export const description = "We find that the Laplacian spectrum of the affinity matrices of self-supervised networks, particularly self-supervised vision transformers, can be used to decompose an image into meaningful semantic segments."
 
 // Abstract
-export const abstract = "Abstract"
+export const abstract = "Unsupervised object localization and semantic segmentation are long-standing computer vision challenges that involve decomposing an image into semantically-meaningful segments without any labeled data. These tasks are particularly interesting in an unsupervised setting due to the difficulty and cost of obtaining dense image annotations, but existing unsupervised approaches struggle with complex scenes containing multiple objects. Differently from existing methods, which are purely based on deep learning, we take inspiration from traditional spectral segmentation methods by reframing image decomposition as a graph partitioning problem. Specifically, we examine the eigenvectors of the Laplacian of a feature affinity matrix from self-supervised networks. We find that these eigenvectors already decompose an image into meaningful segments, and can be readily used to localize objects in a scene. Furthermore, by clustering the features associated with these segments across a dataset, we can obtain well-delineated, nameable regions, i.e.\ semantic segmentations. Experiments on complex datasets (Pascal VOC, MS-COCO) demonstrate that our simple spectral method outperforms the state-of-the-art in unsupervised localization and segmentation by a significant margin. Furthermore, our method can be readily used for a variety of complex image editing tasks, such as background removal and compositing."
 
 // Institutions
 export const institutions = {
   1: "Oxford University",
-  2: "Oxford University"
+  // 2: "Oxford University"
 }
 
 // Authors
@@ -38,19 +38,22 @@ export const authors = [
 ]
 
 // Links
+// TODO: Add the link to the paper
 export const links = {
   'paper': "#", // "https://arxiv.org/abs/2002.00733",
-  'github': "https://github.com/lukemelas/unsupervised-image-segmentation"
+  'github': "#" // "https://github.com/lukemelas/deep-spectral-segmentation"
 }
 
 // Acknowledgements
-export const acknowledgements = "We thank xyz for abc..."
+// TODO: Check these acknowledgements
+export const acknowledgements = "L. M. K. acknowledges the generous support of the Rhodes Trust. C. R. is supported by Innovate UK (project 71653) on behalf of UK Research and Innovation (UKRI) and by the European Research Council (ERC) IDIU-638009. I. L. is supported by the EPSRC programme grant Seebibyte EP/M013774/1 and ERC starting grant IDIU-638009. A. V. is funded by ERC grant IDIU-638009."
 
 // Citation
-export const citationId = "melaskyriazi2021finding"
+export const citationId = "melaskyriazi2022deep"
 export const citationAuthors = "Luke Melas-Kyriazi and Christian Rupprecht and Iro Laina and Andrea Vedaldi"
-export const citationYear = "2021"
-export const citationBooktitle = "Arxiv"
+export const citationYear = "2022"
+export const citationBooktitle = "CVPR"
 
 // Video
+// TODO: Add a link to the video
 export const video_url = "https://www.youtube.com/embed/ScMzIvxBSi4"

@@ -18,7 +18,7 @@ export const Authors = () => (
             <NextLink href={author.url} passHref={true}>
               <ChakraLink>{author.name}</ChakraLink>
             </NextLink>
-            <sup> {author.institutions.toString()}</sup>
+            {/* <sup> {author.institutions.toString()}</sup> */}
           </Box>
         )
       }
@@ -27,7 +27,7 @@ export const Authors = () => (
       {
         Object.entries(institutions).map(tuple =>
           <Box key={tuple[0]}>
-            <sup>{tuple[0]}  </sup>
+            {/* <sup>{tuple[0]}  </sup> */}
             {tuple[1]}
           </Box>
         )

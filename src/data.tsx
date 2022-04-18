@@ -43,7 +43,7 @@ export const links = {
   'paper': "#", // "https://arxiv.org/abs/2002.00733",
   'github': "#", // "https://github.com/lukemelas/deep-spectral-segmentation"
   'demo': "#", // "https://huggingface.co/spaces/lukemelas/deep-spectral-segmentation"
-  'poster': "/poster.pdf", // "https://huggingface.co/spaces/lukemelas/deep-spectral-segmentation"
+  'poster': "/images/poster.pdf", // "https://huggingface.co/spaces/lukemelas/deep-spectral-segmentation"
 }
 
 // Acknowledgements

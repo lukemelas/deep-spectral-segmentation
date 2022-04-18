@@ -1,5 +1,5 @@
 import { Button, Stack } from '@chakra-ui/react'
-import { AiOutlineGithub, AiOutlineCodeSandbox } from "react-icons/ai"
+import { AiOutlineGithub, AiOutlineCodeSandbox, AiOutlineContainer } from "react-icons/ai"
 import { IoIosPaper } from "react-icons/io"
 import NextLink from 'next/link'
 
@@ -28,6 +28,11 @@ export const LinksRow = () => (
     <NextLink href={links.paper} passHref={true}>
       <Button leftIcon={<AiOutlineCodeSandbox size="25px" />} colorScheme="teal" variant="outline">
         Demo Coming Soon!
+      </Button>
+    </NextLink>
+    <NextLink href={links.poster} passHref={true}>
+      <Button leftIcon={<AiOutlineContainer size="25px" />} colorScheme="teal" variant="solid">
+        Poster
       </Button>
     </NextLink>
   </Stack >

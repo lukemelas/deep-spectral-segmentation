@@ -1,0 +1,41 @@
+# @package _global_
+hydra:
+  run:
+    dir: ./outputs/${name}/${now:%Y-%m-%d--%H-%M-%S}
+
+name: "debug"
+seed: 1
+job_type: 'train'
+fp16: False
+cpu: False
+wandb: False
+wandb_kwargs:
+  project: deep-spectral-segmentation
+
+data:
+  num_classes: 20
+  dataset: pascal
+  train_kwargs:
+    root: ${oc.env:HOME}/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012
+    year: "2012"
+    image_set: train
+    download: False
+  val_kwargs:
+    root: ${oc.env:HOME}/machine-learning-datasets/semantic-segmentation/PASCAL_VOC/VOC2012
+    year: "2012"
+    image_set: "val"
+    download: False
+  loader:
+    batch_size: 144
+    num_workers: 8
+    pin_memory: False
+  transform:
+    resize_size: 256
+    crop_size: 224
+    img_mean: [0.485, 0.456, 0.406]
+    img_std: [0.229, 0.224, 0.225]
+
+segments_dir: ""
+
+logging:
+  print_freq: 50

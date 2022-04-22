@@ -1,0 +1,56 @@
+# @package _global_
+defaults:
+  - base
+  - _self_
+
+job_type: 'train'
+eval_every: 1  # eval every this many epochs
+checkpoint_every: 10  # checkpoint every this many epochs
+
+unfrozen_backbone_layers: 1  # -1 to train all, 0 to freeze entirely, > 0 to specify
+model: 
+  name: resnet50
+  num_classes: ${data.num_classes}
+
+# Please change these
+segments_dir: ""
+matching: ""
+
+checkpoint:
+  resume: null
+  resume_training: True
+  resume_optimizer_only: False
+
+# Exponential moving average of model parameters
+ema:
+  use_ema: False
+  decay: 0.999
+  update_every: 10
+
+# Training steps/epochs
+max_train_steps: 5000
+max_train_epochs: null
+
+# Optimization
+lr: 0.005
+gradient_accumulation_steps: 1
+optimizer:
+  scale_learning_rate_with_batch_size: False
+  clip_grad_norm: null
+
+  # Timm optimizer
+  kind: 'timm'
+  kwargs:
+    opt: 'adamw'
+    weight_decay: 1e-8
+
+# Learning rate scheduling
+scheduler:
+
+  # Transformers scheduler
+  kind: 'transformers'
+  stepwise: True
+  kwargs:
+    name: linear
+    num_warmup_steps: 0
+    num_training_steps: ${max_train_steps}

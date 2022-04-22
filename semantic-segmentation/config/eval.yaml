@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - base
+  - _self_
+
+name: 'eval'
+job_type: 'eval'
+
+segments_dir: ""

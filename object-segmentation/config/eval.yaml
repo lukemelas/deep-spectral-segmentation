@@ -1,0 +1,57 @@
+# @package _global_
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: ./outputs/${name}/${now:%Y-%m-%d_%H-%M-%S}
+
+# General
+name: "debug"
+seed: 1
+job_type: 'eval'
+fp16: False
+cpu: False
+wandb: False
+wandb_kwargs:
+  project: deep-spectral-segmentation
+
+# Data
+data_root: ${env:GANSEG_DATA_SEG_ROOT}  # <- REPLACE THIS WITH YOUR DIRECTORY
+data:
+  - name: 'CUB'
+    images_dir: "${data_root}/CUB_200_2011/test_images"
+    labels_dir: "${data_root}/CUB_200_2011/test_segmentations"
+    crop: True
+    image_size: null
+  - name: 'DUT_OMRON'
+    images_dir: "${data_root}/DUT_OMRON/DUT-OMRON-image"
+    labels_dir: "${data_root}/DUT_OMRON/pixelwiseGT-new-PNG"
+    crop: False
+    image_size: null
+  - name: 'DUTS'
+    images_dir: "${data_root}/DUTS/DUTS-TE/DUTS-TE-Image"
+    labels_dir: "${data_root}/DUTS/DUTS-TE/DUTS-TE-Mask"
+    crop: False
+    image_size: null
+  - name: 'ECSSD'
+    images_dir: "${data_root}/ECSSD/images"
+    labels_dir: "${data_root}/ECSSD/ground_truth_mask"
+    crop: False
+    image_size: null
+
+dataloader:
+  batch_size: 128
+  num_workers: 16
+
+# Predictions
+predictions:
+  root: "/path/to/object-segmentation-data"
+  run: "run_name"
+  downsample: 16  # null
+
+  # The paths to the predictions
+  CUB: ${predictions.root}/CUB_200_2011/${predictions.run}
+  DUT_OMRON: ${predictions.root}/DUT_OMRON/${predictions.run}
+  DUTS: ${predictions.root}/DUTS/${predictions.run}
+  ECSSD: ${predictions.root}/ECSSD/${predictions.run}

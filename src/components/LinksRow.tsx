@@ -7,7 +7,7 @@ import { links } from 'data'
 
 export const LinksRow = () => (
   <Stack direction="row" spacing={4} pt="2rem" pb="2rem">
-    <NextLink href={links.github} passHref={true}>
+    <NextLink href={links.paper} passHref={true}>
       <Button leftIcon={<IoIosPaper size="25px" />} colorScheme="teal" variant="outline">
         Paper
       </Button>
@@ -17,7 +17,7 @@ export const LinksRow = () => (
         Code
       </Button>
     </NextLink>
-    <NextLink href={links.paper} passHref={true}>
+    <NextLink href={links.demo} passHref={true}>
       <Button leftIcon={<AiOutlineCodeSandbox size="25px" />} colorScheme="teal" variant="outline">
         Demo
       </Button>

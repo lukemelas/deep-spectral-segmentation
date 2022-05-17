@@ -41,8 +41,8 @@ export const authors = [
 // TODO: Add the link to the paper
 export const links = {
   'paper': "#", // "https://arxiv.org/abs/2002.00733",
-  'github': "#", // "https://github.com/lukemelas/deep-spectral-segmentation"
-  'demo': "#", // "https://huggingface.co/spaces/lukemelas/deep-spectral-segmentation"
+  'github': "https://github.com/lukemelas/deep-spectral-segmentation", // "https://github.com/lukemelas/deep-spectral-segmentation"
+  'demo': "https://huggingface.co/spaces/lukemelas/deep-spectral-segmentation", // "https://huggingface.co/spaces/lukemelas/deep-spectral-segmentation"
   'poster': "/images/poster.pdf", // "https://huggingface.co/spaces/lukemelas/deep-spectral-segmentation"
 }
 

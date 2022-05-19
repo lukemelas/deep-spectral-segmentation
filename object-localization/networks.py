@@ -1,3 +1,7 @@
+"""
+Loads model. Depends on DINO repo.
+Code adapted from LOST: https://github.com/valeoai/LOST
+"""
 import torch
 import torch.nn as nn
 from torchvision.models.resnet import resnet50

@@ -169,6 +169,12 @@ Also, if you want to visualize your segmentations, you should be able to use `st
 
 For semantic segmentation, we provide full instructions in the `semantic-segmentation` subfolder.
 
+#### Acknowledgements
+
+L. M. K. acknowledges the generous support of the Rhodes Trust. C. R. is supported by Innovate UK (project 71653) on behalf of UK Research and Innovation (UKRI) and by the European Research Council (ERC) IDIU-638009. I. L. and A. V. are supported by the VisualAI EPSRC programme grant (EP/T028572/1).
+
+We would like to acknowledge LOST ([paper](https://arxiv.org/abs/2109.14279) and [code](https://github.com/valeoai/LOST)), whose code we adapt for our object localization experiments. If you are interested in object localization, we suggest checking out their work! 
+
 #### Citation   
 ```
 @inproceedings{

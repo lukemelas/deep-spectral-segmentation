@@ -1,3 +1,7 @@
+"""
+Main functions for object discovery. 
+Code adapted from LOST: https://github.com/valeoai/LOST
+"""
 from collections import namedtuple
 from typing import Optional, Tuple
 import torch

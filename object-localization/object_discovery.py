@@ -8,32 +8,6 @@ import scipy.ndimage
 import numpy as np
 from datasets import bbox_iou
 
-ParamsCRF = namedtuple('ParamsCRF', 'w1 alpha beta w2 gamma it')
-DEFAULT_CRF_PARAMS = ParamsCRF(
-    w1    = 6,     # weight of bilateral term  # 10.0,
-    alpha = 40,    # spatial std  # 80,  
-    beta  = 13,    # rgb  std  # 13,  
-    w2    = 3,     # weight of spatial term  # 3.0, 
-    gamma = 3,     # spatial std  # 3,   
-    it    = 5.0,   # iteration  # 5.0, 
-)
-
-
-def apply_crf(unary_potentials_low_res: torch.Tensor, img_np: np.array, dims: Tuple, crf_params: Tuple = DEFAULT_CRF_PARAMS):
-    import denseCRF
-
-    H, W = img_np.shape[:2]
-    H_, W_ = dims
-
-    # Get unary potentials
-    unary_potentials = F.interpolate(unary_potentials_low_res.reshape(1,1,H_,W_), size=(H,W), mode='bilinear').squeeze()
-    unary_potentials = (unary_potentials - unary_potentials.min()) / (unary_potentials.max() - unary_potentials.min())
-    unary_potentials_np = torch.stack((1 - unary_potentials, unary_potentials), dim=-1).cpu().numpy()
-    
-    # Return result of CRF
-    out = denseCRF.densecrf(img_np, unary_potentials_np, crf_params)
-    return out
-
 
 def get_eigenvectors_from_features(feats, which_matrix: str = 'affinity_torch', K=2):
     from scipy.sparse.linalg import eigsh

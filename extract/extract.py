@@ -845,6 +845,6 @@ if __name__ == '__main__':
         extract_bbox_clusters=extract_bbox_clusters,
         extract_semantic_segmentations=extract_semantic_segmentations,
         extract_crf_segmentations=extract_crf_segmentations,
-        extract_single_region_segmentations=extract_single_region_segmentations, , 
+        extract_single_region_segmentations=extract_single_region_segmentations,
         vis_segmentations=vis_segmentations,
     ))

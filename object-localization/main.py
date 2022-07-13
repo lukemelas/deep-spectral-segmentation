@@ -23,7 +23,7 @@ from visualizations import visualize_fms, visualize_predictions, visualize_seed_
 from object_discovery import lost, detect_box, dino_seg, get_eigenvectors_from_features, get_largest_cc_box, get_bbox_from_patch_mask
 
 
-def parse_args(): 
+def parse_args():
     parser = argparse.ArgumentParser("Visualize Self-Attention maps")
     parser.add_argument(
         "--arch",
@@ -66,15 +66,18 @@ def parse_args():
         help="If want to apply only on one image, give file path.",
     )
 
-    # Folder used to output visualizations and 
+    # Folder used to output visualizations and
     parser.add_argument(
         "--output_dir", type=str, default="outputs", help="Output directory to store predictions and visualizations."
     )
 
     # Evaluation setup
-    parser.add_argument("--no_hard", action="store_true", help="Only used in the case of the VOC_all setup (see the paper).")
-    parser.add_argument("--no_evaluation", action="store_true", help="Compute the evaluation.")
-    parser.add_argument("--save_predictions", default=True, type=bool, help="Save predicted bouding boxes.")
+    parser.add_argument("--no_hard", action="store_true",
+                        help="Only used in the case of the VOC_all setup (see the paper).")
+    parser.add_argument("--no_evaluation", action="store_true",
+                        help="Compute the evaluation.")
+    parser.add_argument("--save_predictions", default=True,
+                        type=bool, help="Save predicted bouding boxes.")
 
     # Visualization
     parser.add_argument(
@@ -86,7 +89,8 @@ def parse_args():
     )
 
     # For ResNet dilation
-    parser.add_argument("--resnet_dilate", type=int, default=2, help="Dilation level of the resnet model.")
+    parser.add_argument("--resnet_dilate", type=int, default=2,
+                        help="Dilation level of the resnet model.")
 
     # LOST parameters
     parser.add_argument(
@@ -104,21 +108,26 @@ def parse_args():
     )
 
     # Misc
-    parser.add_argument("--name", type=str, default=None, help='Experiment name')
-    parser.add_argument("--skip_if_exists", action='store_true', help='If results dir already exists , exit')
+    parser.add_argument("--name", type=str, default=None,
+                        help='Experiment name')
+    parser.add_argument("--skip_if_exists", action='store_true',
+                        help='If results dir already exists , exit')
 
     # Use dino-seg proposed method
-    parser.add_argument("--dinoseg", action="store_true", help="Apply DINO-seg baseline.")
+    parser.add_argument("--dinoseg", action="store_true",
+                        help="Apply DINO-seg baseline.")
     parser.add_argument("--dinoseg_head", type=int, default=4)
-    
+
     # Use eigenvalue method
-    parser.add_argument("--eigenseg", action='store_true', help='Apply eigenvalue method')
-    parser.add_argument("--precomputed_eigs_dir", default=None, type=str, 
+    parser.add_argument("--eigenseg", action='store_true',
+                        help='Apply eigenvalue method')
+    parser.add_argument("--precomputed_eigs_dir", default=None, type=str,
                         help='Apply eigenvalue method with precomputed bboxes')
     parser.add_argument("--precomputed_eigs_downsample", default=16, type=str)
     parser.add_argument("--which_matrix", choices=['infer', 'affinity', 'laplacian'],
                         default='infer', help='Which matrix to use for eigenvector calculation')
 
+    parser.add_argument("--ganseg", default=False, type=bool, help="GANSEG")
     # Parse
     args = parser.parse_args()
 
@@ -154,9 +163,10 @@ def main():
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-        ])        
+        ])
         inverse_transform = transforms.Compose([
-            transforms.Normalize(mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225], std=[1/0.229, 1/0.224, 1/0.225]),
+            transforms.Normalize(
+                mean=[-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225], std=[1 / 0.229, 1 / 0.224, 1 / 0.225]),
             transforms.ToPILImage()
         ])
 
@@ -172,7 +182,8 @@ def main():
     elif args.dinoseg:
         # Experiment with the baseline DINO-seg
         if "vit" not in args.arch:
-            raise ValueError("DINO-seg can only be applied to tranformer networks.")
+            raise ValueError(
+                "DINO-seg can only be applied to tranformer networks.")
         exp_name = f"{args.arch}-{args.patch_size}_dinoseg-head{args.dinoseg_head}"
     else:
         # Experiment with LOST
@@ -197,17 +208,20 @@ def main():
 
     # -------------------------------------------------------------------------------------------------------
     # Model
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device(
+        "cuda") if torch.cuda.is_available() else torch.device("cpu")
     if args.ganseg:
-        model = torch.hub.load('greeneggsandyaml/uss', 'simple_unet').to(device).eval()
+        model = torch.hub.load('greeneggsandyaml/uss',
+                               'simple_unet').to(device).eval()
     else:
-        model = get_model(args.arch, args.patch_size, args.resnet_dilate, device)
+        model = get_model(args.arch, args.patch_size,
+                          args.resnet_dilate, device)
 
     print(f"Running LOST on the dataset {dataset.name} (exp: {exp_name})")
     print(f"Args:")
     print(pprint(args.__dict__))
 
-    # Visualization 
+    # Visualization
     if args.visualize:
         vis_folder = f"{args.output_dir}/visualizations/{exp_name}"
         os.makedirs(vis_folder, exist_ok=True)
@@ -218,7 +232,7 @@ def main():
     gt_dict = {}
     cnt = 0
     corloc = np.zeros(len(dataset.dataloader))
-    
+
     pbar = tqdm(dataset.dataloader)
     for im_id, inp in enumerate(pbar):
 
@@ -238,15 +252,19 @@ def main():
             if args.eigenseg:
                 size_im = (
                     img.shape[0],
-                    int(np.floor(img.shape[1] / args.patch_size) * args.patch_size),
-                    int(np.floor(img.shape[2] / args.patch_size) * args.patch_size),
+                    int(np.floor(img.shape[1] /
+                        args.patch_size) * args.patch_size),
+                    int(np.floor(img.shape[2] /
+                        args.patch_size) * args.patch_size),
                 )
                 img = paded = img[:, :size_im[1], :size_im[2]]
             else:
                 size_im = (
                     img.shape[0],
-                    int(np.ceil(img.shape[1] / args.patch_size) * args.patch_size),
-                    int(np.ceil(img.shape[2] / args.patch_size) * args.patch_size),
+                    int(np.ceil(img.shape[1] /
+                        args.patch_size) * args.patch_size),
+                    int(np.ceil(img.shape[2] /
+                        args.patch_size) * args.patch_size),
                 )
                 paded = torch.zeros(size_im)
                 paded[:, : img.shape[1], : img.shape[2]] = img
@@ -276,32 +294,39 @@ def main():
                 fname = f"COCO_train2014_{int(im_name):012d}.pth"
             elif 'VOC' in dataset.name:
                 fname = im_name.replace('.jpg', '.pth')
-            precomputed_eigs_file = os.path.join(args.precomputed_eigs_dir, fname)
-            precomputed_eigs = torch.load(precomputed_eigs_file, map_location='cpu')
-            eigenvectors = precomputed_eigs['eigenvectors']  # tensor of shape (K, H_lr * W_lr)
+            precomputed_eigs_file = os.path.join(
+                args.precomputed_eigs_dir, fname)
+            precomputed_eigs = torch.load(
+                precomputed_eigs_file, map_location='cpu')
+            # tensor of shape (K, H_lr * W_lr)
+            eigenvectors = precomputed_eigs['eigenvectors']
 
-            # Get eigenvectors 
+            # Get eigenvectors
             if args.which_matrix == 'infer':  # get the type
-                which_matrix = Path(args.precomputed_eigs_dir).name.split('_')[0]
+                which_matrix = Path(
+                    args.precomputed_eigs_dir).name.split('_')[0]
             else:
                 which_matrix = args.which_matrix
-            segment_index = {'matting': 1, 'laplacian': 1, 'affinity': 0}[which_matrix]
+            segment_index = {'matting': 1, 'laplacian': 1,
+                             'affinity': 0}[which_matrix]
             patch_mask = (eigenvectors[segment_index] > 0)
             pred = get_bbox_from_patch_mask(patch_mask, init_image_size)
 
         # Extract features from self-supervised model
         else:
-            
+
             # Move to GPU
             img = img.cuda(non_blocking=True)
-            
+
             # ------------ FORWARD PASS -------------------------------------------
             if "vit" in args.arch:
                 # Store the outputs of qkv layer from the last attention layer
                 feat_out = {}
+
                 def hook_fn_forward_qkv(module, input, output):
                     feat_out["qkv"] = output
-                model._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(hook_fn_forward_qkv)
+                model._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(
+                    hook_fn_forward_qkv)
 
                 # Forward pass in the model
                 attentions = model.get_last_selfattention(img[None, :, :, :])
@@ -317,7 +342,8 @@ def main():
                 # Baseline: compute DINO segmentation technique proposed in the DINO paper
                 # and select the biggest component
                 if args.dinoseg:
-                    pred = dino_seg(attentions, (w_featmap, h_featmap), args.patch_size, head=args.dinoseg_head)
+                    pred = dino_seg(attentions, (w_featmap, h_featmap),
+                                    args.patch_size, head=args.dinoseg_head)
                     pred = np.asarray(pred)
                 else:
                     # Extract the qkv features of the last attention layer
@@ -371,35 +397,43 @@ def main():
             # ------------ Apply LOST -------------------------------------------
             if not args.dinoseg:
                 if args.eigenseg:
-                    
+
                     # Get eigenvectors
-                    eigenvectors = get_eigenvectors_from_features(feats, args.which_matrix)
-                    
+                    eigenvectors = get_eigenvectors_from_features(
+                        feats, args.which_matrix)
+
                     # Get bounding box
-                    assert ('affinity' in args.which_matrix) ^ ('laplacian' in args.which_matrix)
+                    assert ('affinity' in args.which_matrix) ^ (
+                        'laplacian' in args.which_matrix)
                     eig_index = 0 if 'affinity' in args.which_matrix else 1
                     patch_mask = (eigenvectors[:, eig_index] > 0)
-                    pred = get_bbox_from_patch_mask(patch_mask, init_image_size)
-                
+                    pred = get_bbox_from_patch_mask(
+                        patch_mask, init_image_size)
+
                 else:
-                    
-                    pred, A, M, scores, seed = lost(feats, dims_wh, scales, init_image_size, k_patches=args.k_patches)
+
+                    pred, A, M, scores, seed = lost(
+                        feats, dims_wh, scales, init_image_size, k_patches=args.k_patches)
 
                 # ------------ Visualizations -------------------------------------------
                 if args.visualize == "fms":
-                    visualize_fms(A.clone().cpu().numpy(), seed, scores, dims_wh, scales, vis_folder, im_name)
+                    visualize_fms(A.clone().cpu().numpy(), seed,
+                                  scores, dims_wh, scales, vis_folder, im_name)
 
                 elif args.visualize == "seed_expansion":
                     image = dataset.load_image(im_name)
 
                     # Before expansion
-                    pred_seed, _ = detect_box(A[seed, :], seed, dims_wh, scales=scales, initial_im_size=init_image_size[1:])
-                    visualize_seed_expansion(image, pred, seed, pred_seed, scales, dims_wh, vis_folder, im_name)
+                    pred_seed, _ = detect_box(
+                        A[seed, :], seed, dims_wh, scales=scales, initial_im_size=init_image_size[1:])
+                    visualize_seed_expansion(
+                        image, pred, seed, pred_seed, scales, dims_wh, vis_folder, im_name)
 
                 elif args.visualize == "pred":
                     image = dataset.load_image(im_name)
-                    visualize_predictions(image, pred, seed, scales, dims_wh, vis_folder, im_name)
-            
+                    visualize_predictions(
+                        image, pred, seed, scales, dims_wh, vis_folder, im_name)
+
         # Save the prediction
         preds_dict[im_name] = pred
         gt_dict[im_name] = gt_bbxs
@@ -416,7 +450,8 @@ def main():
 
         cnt += 1
         if cnt % 10 == 0:
-            pbar.set_description(f"Found {int(np.sum(corloc))}/{cnt} ({int(np.sum(corloc))/cnt * 100:.1f}%)")
+            pbar.set_description(
+                f"Found {int(np.sum(corloc))}/{cnt} ({int(np.sum(corloc))/cnt * 100:.1f}%)")
 
     # Save predicted bounding boxes
     if args.save_predictions:
@@ -430,11 +465,12 @@ def main():
 
     # Evaluate
     if not args.no_evaluation:
-        print(f"corloc: {100*np.sum(corloc)/cnt:.2f} ({int(np.sum(corloc))}/{cnt})")
+        print(
+            f"corloc: {100*np.sum(corloc)/cnt:.2f} ({int(np.sum(corloc))}/{cnt})")
         result_file = os.path.join(folder, 'results.txt')
         with open(result_file, 'w') as f:
-            f.write('corloc,%.1f,,\n'%(100*np.sum(corloc)/cnt))
-        print('File saved at %s'%result_file)
+            f.write('corloc,%.1f,,\n' % (100 * np.sum(corloc) / cnt))
+        print('File saved at %s' % result_file)
 
 
 if __name__ == "__main__":

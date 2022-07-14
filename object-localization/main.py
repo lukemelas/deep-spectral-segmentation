@@ -141,24 +141,10 @@ def main():
     # Dataset
 
     # Transform
-    if args.ganseg:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
-        inverse_transform = transforms.Compose([
-            transforms.Normalize(mean=[-1, -1, -1], std=[2, 2, 2]),
-            transforms.ToPILImage()
-        ])
-    else:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-        ])        
-        inverse_transform = transforms.Compose([
-            transforms.Normalize(mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225], std=[1/0.229, 1/0.224, 1/0.225]),
-            transforms.ToPILImage()
-        ])
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])        
 
     # If an image_path is given, apply the method only to the image
     if args.image_path is not None:
@@ -198,10 +184,7 @@ def main():
     # -------------------------------------------------------------------------------------------------------
     # Model
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    if args.ganseg:
-        model = torch.hub.load('greeneggsandyaml/uss', 'simple_unet').to(device).eval()
-    else:
-        model = get_model(args.arch, args.patch_size, args.resnet_dilate, device)
+    model = get_model(args.arch, args.patch_size, args.resnet_dilate, device)
 
     print(f"Running LOST on the dataset {dataset.name} (exp: {exp_name})")
     print(f"Args:")
@@ -234,27 +217,26 @@ def main():
             continue
 
         # Padding the image with zeros to fit multiple of patch-size
-        if not args.ganseg:
-            if args.eigenseg:
-                size_im = (
-                    img.shape[0],
-                    int(np.floor(img.shape[1] / args.patch_size) * args.patch_size),
-                    int(np.floor(img.shape[2] / args.patch_size) * args.patch_size),
-                )
-                img = paded = img[:, :size_im[1], :size_im[2]]
-            else:
-                size_im = (
-                    img.shape[0],
-                    int(np.ceil(img.shape[1] / args.patch_size) * args.patch_size),
-                    int(np.ceil(img.shape[2] / args.patch_size) * args.patch_size),
-                )
-                paded = torch.zeros(size_im)
-                paded[:, : img.shape[1], : img.shape[2]] = img
-                img = paded
+        if args.eigenseg:
+            size_im = (
+                img.shape[0],
+                int(np.floor(img.shape[1] / args.patch_size) * args.patch_size),
+                int(np.floor(img.shape[2] / args.patch_size) * args.patch_size),
+            )
+            img = paded = img[:, :size_im[1], :size_im[2]]
+        else:
+            size_im = (
+                img.shape[0],
+                int(np.ceil(img.shape[1] / args.patch_size) * args.patch_size),
+                int(np.ceil(img.shape[2] / args.patch_size) * args.patch_size),
+            )
+            paded = torch.zeros(size_im)
+            paded[:, : img.shape[1], : img.shape[2]] = img
+            img = paded
 
-            # Size for transformers
-            w_featmap = img.shape[-2] // args.patch_size
-            h_featmap = img.shape[-1] // args.patch_size
+        # Size for transformers
+        w_featmap = img.shape[-2] // args.patch_size
+        h_featmap = img.shape[-1] // args.patch_size
 
         # ------------ GROUND-TRUTH -------------------------------------------
         if not args.no_evaluation:

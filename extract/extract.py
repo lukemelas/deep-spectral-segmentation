@@ -205,9 +205,9 @@ def _extract_eig(
 
             # Color affinities (of type scipy.sparse.csr_matrix)
             if which_color_matrix == 'knn':
-                W_lr = utils.knn_affinity(image_lr / 255)
+                W_lr = utils.knn_affinity(image_lr)
             elif which_color_matrix == 'rw':
-                W_lr = utils.rw_affinity(image_lr / 255)
+                W_lr = utils.rw_affinity(image_lr)
             
             # Convert to dense numpy array
             W_color = np.array(W_lr.todense().astype(np.float32))

@@ -205,8 +205,15 @@ def rw_affinity(image, sigma=0.033, radius=1):
 
 
 def get_diagonal(W: scipy.sparse.csr_matrix, threshold: float = 1e-12):
-    # See normalize_rows in pymatting.util.util
-    from pymatting.util.util import row_sum
+    """Gets the diagonal sum of a sparse matrix"""
+    try:
+        from pymatting.util.util import row_sum
+    except:
+        raise ImportError(
+            'Please install pymatting to compute the diagonal sums:\n'
+            'pip3 install pymatting'
+        )
+
     D = row_sum(W)
     D[D < threshold] = 1.0  # Prevent division by zero.
     D = scipy.sparse.diags(D)

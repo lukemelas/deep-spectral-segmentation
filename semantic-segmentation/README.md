@@ -9,7 +9,7 @@ For example, you can run the following in the `extract` directory.
 ```bash
 # Example parameters for the semantic segmentation experiments
 DATASET="VOC2012"
-MODEL="dino_vitb16"
+MODEL="dino_vits16"
 MATRIX="laplacian"
 DOWNSAMPLE=16
 N_SEG=15

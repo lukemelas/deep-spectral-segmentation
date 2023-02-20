@@ -7,3 +7,4 @@ scipy
 torch
 torchvision
 tqdm
+pymatting
